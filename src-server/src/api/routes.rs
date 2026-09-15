@@ -56,7 +56,8 @@ pub fn router(app: AppContext, auth: AuthConfig) -> Router {
         // ── 搜索 / 详情 / 收藏夹 ─────────────────────────
         .route("/search", get(search_comic))
         .route("/comic/:comic_id", get(get_comic))
-        .route("/favorite", get(get_favorite))
+        .route("/comic", post(post_comic))
+        .route("/favorite", get(get_favorite).post(post_favorite))
         // ── 下载任务 ──────────────────────────────────────
         .route("/download/task", post(create_download_task))
         .route("/download/task/:chapter_id/pause", post(pause_download_task))
@@ -80,7 +81,7 @@ pub fn router(app: AppContext, auth: AuthConfig) -> Router {
         .route("/sync/comic-in-search", post(sync_comic_in_search))
         // ── 日志 ──────────────────────────────────────────
         .route("/logs/size", get(get_logs_dir_size))
-        .route("/logs", get(get_logs));
+        .route("/logs", get(get_logs).post(post_logs));
 
     protected
         .merge(public)
@@ -184,6 +185,15 @@ async fn get_comic(
     Ok(Json(comic))
 }
 
+/// 前端走的是 `POST /api/comic` + `{ comicId }`，这里做一层适配。
+async fn post_comic(
+    State(state): State<AppState>,
+    Json(req): Json<ComicIdRequest>,
+) -> Result<Json<Comic>, ApiError> {
+    let comic = commands::get_comic(&state.app, req.comic_id).await?;
+    Ok(Json(comic))
+}
+
 #[derive(Deserialize)]
 struct FavoriteQuery {
     sort: GetFavoriteSort,
@@ -198,11 +208,21 @@ async fn get_favorite(
     Ok(Json(result))
 }
 
+/// 前端走的是 `POST /api/favorite` + `{ sort, page }`。
+async fn post_favorite(
+    State(state): State<AppState>,
+    Json(q): Json<FavoriteQuery>,
+) -> Result<Json<GetFavoriteResult>, ApiError> {
+    let result = commands::get_favorite(&state.app, q.sort, q.page).await?;
+    Ok(Json(result))
+}
+
 // ════════════════════════════════════════════════════════════════
 // 下载任务
 // ════════════════════════════════════════════════════════════════
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct CreateTaskRequest {
     comic: Comic,
     chapter_id: String,
@@ -241,6 +261,7 @@ async fn cancel_download_task(
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct ComicIdRequest {
     comic_id: String,
 }
@@ -307,27 +328,33 @@ async fn update_downloaded_comics(
 // 字段同步
 // ════════════════════════════════════════════════════════════════
 
+/// 前端把 comic 包在 `{ comic }` 里发过来，所以这里需要一层 wrapper。
+#[derive(Deserialize)]
+struct ComicWrapper<T> {
+    comic: T,
+}
+
 async fn sync_comic(
     State(state): State<AppState>,
-    Json(comic): Json<Comic>,
+    Json(req): Json<ComicWrapper<Comic>>,
 ) -> Result<Json<Comic>, ApiError> {
-    let synced = commands::get_synced_comic(&state.app, comic)?;
+    let synced = commands::get_synced_comic(&state.app, req.comic)?;
     Ok(Json(synced))
 }
 
 async fn sync_comic_in_favorite(
     State(state): State<AppState>,
-    Json(comic): Json<ComicInFavorite>,
+    Json(req): Json<ComicWrapper<ComicInFavorite>>,
 ) -> Result<Json<ComicInFavorite>, ApiError> {
-    let synced = commands::get_synced_comic_in_favorite(&state.app, comic)?;
+    let synced = commands::get_synced_comic_in_favorite(&state.app, req.comic)?;
     Ok(Json(synced))
 }
 
 async fn sync_comic_in_search(
     State(state): State<AppState>,
-    Json(comic): Json<ComicInSearch>,
+    Json(req): Json<ComicWrapper<ComicInSearch>>,
 ) -> Result<Json<ComicInSearch>, ApiError> {
-    let synced = commands::get_synced_comic_in_search(&state.app, comic)?;
+    let synced = commands::get_synced_comic_in_search(&state.app, req.comic)?;
     Ok(Json(synced))
 }
 
@@ -352,6 +379,19 @@ struct LogsQuery {
 
 fn default_tail() -> usize {
     500
+}
+
+/// 前端走的是 `POST /api/logs` + `{ tail }`。
+async fn post_logs(
+    State(state): State<AppState>,
+    Json(q): Json<LogsQuery>,
+) -> Result<Json<Vec<String>>, ApiError> {
+    let logs_dir = state.app.paths().logs_dir();
+    let lines = tokio::task::spawn_blocking(move || read_log_tail(&logs_dir, q.tail))
+        .await
+        .map_err(|err| ApiError(CommandError::from("读取日志失败", err)))?
+        .map_err(|err| ApiError(CommandError::from("读取日志失败", err)))?;
+    Ok(Json(lines))
 }
 
 /// 读取日志文件尾部若干行，用于网页日志面板的初始加载。

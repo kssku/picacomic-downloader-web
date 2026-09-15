@@ -76,7 +76,15 @@ impl PicaClient {
         let token = self.app.get_config().read().token.clone();
 
         let base_url = self.base_url.read().clone();
-        let url = format!("{}{}", base_url, path);
+        // base_url 与 path 之间必须恰好有一个斜杠。
+        //
+        // 不能简单写 format!("{base_url}{path}")：那样要求 base_url 必须以
+        // "/" 结尾、且 path 不能以 "/" 开头，全凭配置自觉。实际踩到的坑是
+        // 用户把 apiBaseUrl 配成 "https://picaapi.go2778.com"（无结尾斜杠），
+        // 拼出 "...go2778.comusers/profile" 这种畸形 URL——某些反代会接受
+        // 并返回 422，看起来像"签名错误"，排查方向完全被带偏。
+        // 这里统一规整，不依赖配置的书写习惯。
+        let url = format!("{}/{}", base_url.trim_end_matches('/'), path.trim_start_matches('/'));
 
         let request = self
             .api_client
