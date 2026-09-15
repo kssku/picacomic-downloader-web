@@ -248,6 +248,19 @@ impl DownloadTask {
                 return;
             }
         };
+        // `img_urls` 为空说明 Pica 对该章节返回了 0 张图片（`docs` 为空数组）。
+        // 此时若继续往下走，`0 == 0` 会让「下载完整性」检查通过，从而把一个
+        // 什么都没下载的章节标记为「下载成功」。这里直接判定为失败。
+        if img_urls.is_empty() {
+            let err_title = format!("`{comic_title} - {chapter_title}`没有可下载的图片");
+            let err_msg = "Pica 接口返回的图片列表为空，该章节可能已下架或需要更高权限";
+            tracing::error!(err_title, message = err_msg);
+
+            self.set_state(DownloadTaskState::Failed);
+            self.emit_download_task_update_event();
+
+            return;
+        }
         // 记录总共需要下载的图片数量
         #[allow(clippy::cast_possible_truncation)]
         self.total_img_count
@@ -399,25 +412,6 @@ impl DownloadTask {
             .context("获取第`1`页图片链接失败")?;
 
         let total_pages = first_page.pages;
-        tracing::warn!(
-            comic_title,
-            chapter_title,
-            "DEBUG_IMG total={} limit={} page={} pages={} docs={}",
-            first_page.total,
-            first_page.limit,
-            first_page.page,
-            first_page.pages,
-            first_page.docs.len()
-        );
-        if let Some(first) = first_page.docs.first() {
-            tracing::warn!(
-                comic_title,
-                chapter_title,
-                "DEBUG_IMG first media: file_server=`{}` path=`{}`",
-                first.media.file_server,
-                first.media.path
-            );
-        }
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         let mut page_imgs_pairs = Vec::with_capacity(total_pages as usize);
         page_imgs_pairs.push((1, first_page.docs));
@@ -457,15 +451,6 @@ impl DownloadTask {
             .collect();
 
         tracing::trace!(comic_title, chapter_title, "获取图片链接成功");
-        tracing::warn!(
-            comic_title,
-            chapter_title,
-            "DEBUG_IMG final img_urls count={}",
-            img_urls.len()
-        );
-        if let Some(u) = img_urls.first() {
-            tracing::warn!(comic_title, chapter_title, "DEBUG_IMG first url=`{}`", u);
-        }
 
         Ok(img_urls)
     }
