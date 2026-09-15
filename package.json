@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "vue-tsc --noEmit && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "verify:lockfile": "pnpm install --frozen-lockfile --lockfile-only"
   },
   "dependencies": {
     "@phosphor-icons/vue": "^2.2.1",
