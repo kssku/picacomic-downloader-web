@@ -9,11 +9,33 @@
 #    3. runtime : 只带二进制 + dist + CA 证书，跑在 debian-slim 上
 #
 #  最终镜像不含 Node / Rust / 源码，体积约 100 MB 上下。
+#
+#  可选构建参数（构建期 HTTP 代理）：
+#    国内直连 npm registry / crates.io / github 通常不通，构建会卡在拉依赖。
+#    若宿主机有代理（例如 192.168.31.124:7890），这样构建即可：
+#      docker compose build \
+#        --build-arg HTTP_PROXY=http://192.168.31.124:7890 \
+#        --build-arg HTTPS_PROXY=http://192.168.31.124:7890
+#    容器内不能用 127.0.0.1 指向宿主机代理，必须用宿主机的局域网 IP。
+#    注意代理是「构建期」参数：运行期会把它们清掉，见 runtime 阶段的注释。
 # ════════════════════════════════════════════════════════════════════
+
+# 声明为全局 ARG，三个阶段都能引用（每个 FROM 之后仍会被重置，故各阶段重新 ENV）
+ARG HTTP_PROXY=""
+ARG HTTPS_PROXY=""
 
 
 # ── 阶段 1：前端 ────────────────────────────────────────────────────
 FROM node:22-bookworm-slim AS web
+
+# 空值是无害的：未传 --build-arg 时，这些变量为空串，
+# pnpm / npm 会按「未配置代理」正常直连。
+ARG HTTP_PROXY
+ARG HTTPS_PROXY
+ENV HTTP_PROXY=$HTTP_PROXY \
+    HTTPS_PROXY=$HTTPS_PROXY \
+    http_proxy=$HTTP_PROXY \
+    https_proxy=$HTTPS_PROXY
 
 ENV PNPM_HOME=/pnpm \
     PATH=/pnpm:$PATH \
@@ -49,6 +71,23 @@ RUN pnpm exec vite build
 # 滚动 tag 上游不会清理，构建不会某天突然拉不到镜像。
 # 本 crate 是 edition 2021，1.x 全系都能编译，钉小版本没有必要。
 FROM rust:1-bookworm AS server
+
+# cargo 不读 HTTP_PROXY，只认 CARGO_HTTP_PROXY；
+# crates.io 索引走 git 拉取，还需给 git 单独配代理。
+# 下面统一由 CARGO_HTTP_PROXY 驱动，git 用它拼出 http.proxy。
+ARG HTTP_PROXY
+ARG HTTPS_PROXY
+ENV HTTP_PROXY=$HTTP_PROXY \
+    HTTPS_PROXY=$HTTPS_PROXY \
+    http_proxy=$HTTP_PROXY \
+    https_proxy=$HTTPS_PROXY \
+    CARGO_HTTP_PROXY=$HTTPS_PROXY
+
+# 只有当代理非空时才写 git 代理配置，避免留下一个空值的 http.proxy
+# 让 git 报 "Proxy CONNECT aborted"。
+RUN if [ -n "$HTTPS_PROXY" ]; then \
+        git config --global http.proxy "$HTTPS_PROXY"; \
+    fi
 
 WORKDIR /build
 
@@ -108,6 +147,23 @@ ENV PICA_DATA_DIR=/data \
     PICA_BIND=0.0.0.0 \
     PICA_PORT=8080 \
     TZ=Asia/Shanghai
+
+# 显式清掉构建期代理，防止渗入运行期。
+#
+# 为什么必须清：reqwest 默认会读 HTTP_PROXY / HTTPS_PROXY 环境变量。
+# 如果这里继承构建时的代理，pica-server 访问哔咔 API 和图片时都会绕道代理；
+# 在构建机上恰好能通，所以问题不会当场暴露，等镜像换环境或代理下线才爆发，
+# 且表现为「全部请求超时」，极难定位。
+#
+# 用 ENV X="" 而不是 UNSET：Dockerfile 没有 UNSET 指令，空串是唯一手段。
+# reqwest 对空串的处理是「视为未配置」，不会尝试连接空地址。
+# NO_PROXY 覆盖回环 + 私有网段，避免用户日后自行配代理时把内网流量也绕进去。
+ENV HTTP_PROXY="" \
+    HTTPS_PROXY="" \
+    http_proxy="" \
+    https_proxy="" \
+    NO_PROXY="localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,*.local" \
+    no_proxy="localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,*.local"
 
 EXPOSE 8080
 

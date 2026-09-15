@@ -17,6 +17,16 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        # 构建期代理：国内直连 npm registry / crates.io 通常不通，
+        # 构建会卡在拉依赖。在 .env 里填宿主机代理地址即可，例如：
+        #     BUILD_HTTP_PROXY=http://192.168.31.124:7890
+        # 注意必须用宿主机的局域网 IP，不能用 127.0.0.1
+        # （构建容器里的 127.0.0.1 指向容器自己，不是宿主机）。
+        # 留空则不加代理，按直连处理。
+        # 这两个变量只作用于构建，不会进入运行期容器（见 Dockerfile runtime 阶段）。
+        HTTP_PROXY: "${BUILD_HTTP_PROXY:-}"
+        HTTPS_PROXY: "${BUILD_HTTPS_PROXY:-}"
     image: pica-server:latest
     container_name: pica-server
 
