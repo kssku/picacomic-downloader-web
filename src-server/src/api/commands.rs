@@ -90,6 +90,15 @@ pub async fn login(app: &AppContext, email: String, password: String) -> Command
         .await
         .map_err(|err| CommandError::from("登录失败", err))?;
 
+    // 必须把 token 落盘。之前这里只把 token 返回给调用方，
+    // 服务端自身的 config.token 仍是空串，导致登录「成功」之后
+    // 所有需要鉴权的请求依然读不到 token，Pica 一律返回 401。
+    let mut config = app.config_read();
+    config.token = token.clone();
+    app.save_config(&config)
+        .map_err(|err| CommandError::from("保存登录凭证失败", err))?;
+    tracing::info!("已保存登录凭证");
+
     Ok(token)
 }
 
