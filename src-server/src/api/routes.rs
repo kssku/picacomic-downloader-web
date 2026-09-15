@@ -49,12 +49,12 @@ pub fn router(app: AppContext, auth: AuthConfig) -> Router {
     let protected = Router::new()
         // ── 配置 ──────────────────────────────────────────
         .route("/config", get(get_config).post(save_config))
-        .route("/server/info", get(server_info))
+        .route("/server/info", get(server_info).post(post_server_info))
         // ── 登录 ──────────────────────────────────────────
         .route("/login", post(login))
-        .route("/user/profile", get(user_profile))
+        .route("/user/profile", get(user_profile).post(post_user_profile))
         // ── 搜索 / 详情 / 收藏夹 ─────────────────────────
-        .route("/search", get(search_comic))
+        .route("/search", get(search_comic).post(post_search))
         .route("/comic/:comic_id", get(get_comic))
         .route("/comic", post(post_comic))
         .route("/favorite", get(get_favorite).post(post_favorite))
@@ -73,14 +73,17 @@ pub fn router(app: AppContext, auth: AuthConfig) -> Router {
         .route("/download/favorites", post(download_all_favorites))
         .route("/download/tasks", get(list_download_tasks))
         // ── 库存 ──────────────────────────────────────────
-        .route("/library/comics", get(get_downloaded_comics))
+        .route(
+            "/library/comics",
+            get(get_downloaded_comics).post(post_downloaded_comics),
+        )
         .route("/library/update", post(update_downloaded_comics))
         // ── 字段同步 ──────────────────────────────────────
         .route("/sync/comic", post(sync_comic))
         .route("/sync/comic-in-favorite", post(sync_comic_in_favorite))
         .route("/sync/comic-in-search", post(sync_comic_in_search))
         // ── 日志 ──────────────────────────────────────────
-        .route("/logs/size", get(get_logs_dir_size))
+        .route("/logs/size", get(get_logs_dir_size).post(post_logs_dir_size))
         .route("/logs", get(get_logs).post(post_logs));
 
     protected
@@ -126,6 +129,11 @@ async fn server_info(State(state): State<AppState>) -> Json<serde_json::Value> {
     Json(commands::get_server_info(&state.app))
 }
 
+/// 前端走的是 `POST /api/server/info` + `{}`。
+async fn post_server_info(State(state): State<AppState>) -> Json<serde_json::Value> {
+    Json(commands::get_server_info(&state.app))
+}
+
 // ════════════════════════════════════════════════════════════════
 // 登录
 // ════════════════════════════════════════════════════════════════
@@ -155,6 +163,13 @@ async fn user_profile(
     Ok(Json(profile))
 }
 
+/// 前端走的是 `POST /api/user/profile` + `{}`。
+async fn post_user_profile(
+    State(state): State<AppState>,
+) -> Result<Json<UserProfileDetailRespData>, ApiError> {
+    user_profile(State(state)).await
+}
+
 // ════════════════════════════════════════════════════════════════
 // 搜索 / 详情 / 收藏夹
 // ════════════════════════════════════════════════════════════════
@@ -171,6 +186,16 @@ struct SearchQuery {
 async fn search_comic(
     State(state): State<AppState>,
     Query(q): Query<SearchQuery>,
+) -> Result<Json<SearchResult>, ApiError> {
+    let result =
+        commands::search_comic(&state.app, q.keyword, q.sort, q.page, q.categories).await?;
+    Ok(Json(result))
+}
+
+/// 前端走的是 `POST /api/search` + `{ keyword, sort, page, categories }`。
+async fn post_search(
+    State(state): State<AppState>,
+    Json(q): Json<SearchQuery>,
 ) -> Result<Json<SearchResult>, ApiError> {
     let result =
         commands::search_comic(&state.app, q.keyword, q.sort, q.page, q.categories).await?;
@@ -324,6 +349,13 @@ async fn update_downloaded_comics(
     Ok(Json(()))
 }
 
+/// 前端走的是 `POST /api/library/comics` + `{}`。
+async fn post_downloaded_comics(
+    State(state): State<AppState>,
+) -> Result<Json<Vec<Comic>>, ApiError> {
+    get_downloaded_comics(State(state)).await
+}
+
 // ════════════════════════════════════════════════════════════════
 // 字段同步
 // ════════════════════════════════════════════════════════════════
@@ -368,6 +400,11 @@ async fn get_logs_dir_size(State(state): State<AppState>) -> Result<Json<u64>, A
         .await
         .map_err(|err| ApiError(CommandError::from("获取日志目录大小失败", err)))??;
     Ok(Json(size))
+}
+
+/// 前端走的是 `POST /api/logs/size` + `{}`。
+async fn post_logs_dir_size(State(state): State<AppState>) -> Result<Json<u64>, ApiError> {
+    get_logs_dir_size(State(state)).await
 }
 
 #[derive(Deserialize)]
