@@ -148,21 +148,28 @@ ENV PICA_DATA_DIR=/data \
     PICA_PORT=8080 \
     TZ=Asia/Shanghai
 
-# 显式清掉构建期代理，防止渗入运行期。
+# 运行期代理与构建期代理彻底分离。
 #
-# 为什么必须清：reqwest 默认会读 HTTP_PROXY / HTTPS_PROXY 环境变量。
-# 如果这里继承构建时的代理，pica-server 访问哔咔 API 和图片时都会绕道代理；
-# 在构建机上恰好能通，所以问题不会当场暴露，等镜像换环境或代理下线才爆发，
-# 且表现为「全部请求超时」，极难定位。
+# 背景：上面的 HTTP_PROXY / HTTPS_PROXY 是「构建期」的，由 build args 传入。
+# 而 reqwest 在运行期也会读同名环境变量 —— 如果放任构建参数渗进来，
+# pica-server 访问哔咔 API 时就会莫名绕道代理：在构建机上恰好能通，
+# 所以问题不会当场暴露，等镜像换环境或代理下线才爆发，且表现为
+# 「全部请求超时」，极难定位。
 #
-# 用 ENV X="" 而不是 UNSET：Dockerfile 没有 UNSET 指令，空串是唯一手段。
-# reqwest 对空串的处理是「视为未配置」，不会尝试连接空地址。
-# NO_PROXY 覆盖回环 + 私有网段，避免用户日后自行配代理时把内网流量也绕进去。
+# 这里把四个变量显式置空，切断继承链。真正需要运行期代理的部署
+# （例如 NAS 直连哔咔不通、必须走代理），由 docker-compose 的
+# environment 段传入 PICA_HTTP_PROXY / PICA_HTTPS_PROXY 覆盖。
+#
+# 为什么用 ENV X="" 而不是 UNSET：Dockerfile 没有 UNSET 指令，
+# 空串是切断继承的唯一手段；reqwest 对空串按「未配置」处理。
 ENV HTTP_PROXY="" \
     HTTPS_PROXY="" \
     http_proxy="" \
-    https_proxy="" \
-    NO_PROXY="localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,*.local" \
+    https_proxy=""
+
+# NO_PROXY 覆盖回环 + 私有网段：即使运行期配了代理，容器内健康检查
+# （127.0.0.1:8080）和局域网互访也不该绕道代理。
+ENV NO_PROXY="localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,*.local" \
     no_proxy="localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,*.local"
 
 EXPOSE 8080

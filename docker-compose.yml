@@ -49,6 +49,37 @@ services:
       PICA_PORT: "8080"
       TZ: "${TZ:-Asia/Shanghai}"
 
+      # ── 运行期代理（可选，但国内几乎必填）─────────────────────────
+      # 与上面的 BUILD_*_PROXY 是两回事：那两个只作用于构建，这两个只
+      # 作用于运行期。
+      #
+      # 什么时候需要：如果 NAS 直连哔咔 API（picaapi.picacomic.com）和
+      # 图片 CDN 不通，就必须在这里配代理，否则网页能打开、能登录，
+      # 但点下载会一直转圈或全部超时。
+      #
+      # 自测方法（在 NAS 上执行）：
+      #   curl -sS -o /dev/null -w '%{http_code}\n' https://picaapi.picacomic.com/
+      #     无输出/超时 = 直连不通，需要配代理
+      #     返回 400    = 通了（400 是哔咔对无签名请求的正常拒绝）
+      #
+      # 填宿主机代理地址。推荐用 host.docker.internal —— 下面的
+      # extra_hosts 已把它映射到宿主机，换 NAS 或改 IP 时不用动配置。
+      # 也可以直接写 NAS 的局域网 IP。
+      #
+      # ⚠ 不能写 127.0.0.1：容器里的 127.0.0.1 指向容器自身，不是宿主机。
+      #
+      # 留空 = 直连。
+      HTTP_PROXY: "${PICA_HTTP_PROXY:-}"
+      HTTPS_PROXY: "${PICA_HTTPS_PROXY:-}"
+      http_proxy: "${PICA_HTTP_PROXY:-}"
+      https_proxy: "${PICA_HTTPS_PROXY:-}"
+
+    # 让容器内可以用 host.docker.internal 指向宿主机，
+    # 这样代理地址写成 http://host.docker.internal:7890 即可，
+    # 不必把 NAS 的局域网 IP 硬编码进 .env。
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
     volumes:
       # 配置 / 日志 / 漫画全在容器内 /data 下。
       # 强烈建议绑到 NAS 的存储池（而不是默认的 docker 卷），
