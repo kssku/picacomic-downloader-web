@@ -1,0 +1,62 @@
+[package]
+name = "pica-server"
+version = "0.1.0"
+description = "Web control panel for picacomic downloader (NAS / Docker)"
+authors = ["you"]
+edition = "2021"
+
+[[bin]]
+name = "pica-server"
+path = "src/main.rs"
+
+[lib]
+name = "pica_server"
+path = "src/lib.rs"
+
+[dependencies]
+# ── 核心逻辑（与原桌面版保持一致，只去掉 Tauri）────────────────
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1" }
+
+reqwest = { version = "0.12", features = ["rustls-tls", "__internal_proxy_sys_no_cache"], default-features = false }
+reqwest-retry = { version = "0.6.1" }
+reqwest-middleware = { version = "0.3.3", features = ["json"] }
+
+hmac = { version = "0.12.1" }
+sha2 = { version = "0.10.8" }
+hex = { version = "0.4.3" }
+
+anyhow = { version = "1" }
+chrono = { version = "0.4", features = ["serde"] }
+tokio = { version = "1.40.0", features = ["full"] }
+bytes = { version = "1.7.1" }
+parking_lot = { version = "0.12.3", features = ["send_guard"] }
+rayon = { version = "1.10.0" }
+image = { version = "0.25.5", default-features = false, features = ["jpeg", "png", "webp"] }
+tracing = { version = "0.1.41" }
+tracing-subscriber = { version = "0.3.19", features = ["json", "time", "local-time"] }
+tracing-appender = { version = "0.2.3" }
+notify = { version = "8.0.0" }
+strfmt = { version = "0.2.4" }
+walkdir = { version = "2.5.0" }
+indexmap = { version = "2.9.0" }
+
+# ── Web 层（新增）──────────────────────────────────────────
+# 注：先锁 0.7 系（与本机 cargo 缓存一致，可离线构建）；
+#     axum-extra 的 typed-header 特性后续需要时再加。
+axum = { version = "0.7", features = ["ws"] }
+tower = { version = "0.5" }
+tower-http = { version = "0.5", features = ["fs", "trace", "cors"] }
+# WebSocket 的 Sink/Stream 拆分会用到
+futures-util = { version = "0.3" }
+
+# ── 认证（新增）────────────────────────────────────────────
+# 注：Web 后台是单用户 + 反代场景，用固定 Token / Basic Auth 即可，
+#     暂不引入 argon2（本机缓存里没有，且离线构建会失败）。
+base64 = { version = "0.22" }
+rand = { version = "0.8" }
+
+[profile.release]
+strip = true
+lto = true
+codegen-units = 1

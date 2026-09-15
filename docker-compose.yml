@@ -1,0 +1,66 @@
+# ════════════════════════════════════════════════════════════════════
+#  pica-server —— 飞牛 NAS / Docker Compose 部署
+#
+#  用法：
+#    1. cp .env.example .env   # 然后改掉 PICA_AUTH_TOKEN
+#    2. docker compose up -d --build
+#    3. 浏览器打开 http://<NAS IP>:8080
+#
+#  常用命令：
+#    docker compose logs -f          # 看实时日志
+#    docker compose up -d --build    # 改代码后重建
+#    docker compose down             # 停止（数据卷保留）
+# ════════════════════════════════════════════════════════════════════
+
+services:
+  pica-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: pica-server:latest
+    container_name: pica-server
+
+    # unless-stopped：NAS 重启后自动拉起，手动 stop 的则保持停止
+    restart: unless-stopped
+
+    ports:
+      # 左边是 NAS 上对外暴露的端口，被占用就改成别的（如 18080）
+      - "${PICA_HOST_PORT:-8080}:8080"
+
+    environment:
+      # ── 认证 ──────────────────────────────────────────────────────
+      # 首次留空会自动生成随机 Token，并在 `docker compose logs` 里
+      # 打印一次；想固定下来就把生成的值填进 .env。
+      PICA_AUTH_TOKEN: "${PICA_AUTH_TOKEN:-}"
+      PICA_AUTH_USER: "${PICA_AUTH_USER:-admin}"
+
+      # ── 服务 ──────────────────────────────────────────────────────
+      PICA_BIND: "0.0.0.0"
+      PICA_PORT: "8080"
+      TZ: "${TZ:-Asia/Shanghai}"
+
+    volumes:
+      # 配置 / 日志 / 漫画全在容器内 /data 下。
+      # 强烈建议绑到 NAS 的存储池（而不是默认的 docker 卷），
+      # 这样漫画是普通文件，方便快照、备份和直接读。
+      - "${PICA_DATA_PATH:-./data}:/data"
+
+    # 下载是 IO + 网络密集型，给足并发文件描述符
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+
+    # 让容器内的日志（含自动生成的 Token）不被 docker 截断
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/api/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
