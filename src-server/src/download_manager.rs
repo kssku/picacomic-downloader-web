@@ -399,6 +399,25 @@ impl DownloadTask {
             .context("获取第`1`页图片链接失败")?;
 
         let total_pages = first_page.pages;
+        tracing::warn!(
+            comic_title,
+            chapter_title,
+            "DEBUG_IMG total={} limit={} page={} pages={} docs={}",
+            first_page.total,
+            first_page.limit,
+            first_page.page,
+            first_page.pages,
+            first_page.docs.len()
+        );
+        if let Some(first) = first_page.docs.first() {
+            tracing::warn!(
+                comic_title,
+                chapter_title,
+                "DEBUG_IMG first media: file_server=`{}` path=`{}`",
+                first.media.file_server,
+                first.media.path
+            );
+        }
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         let mut page_imgs_pairs = Vec::with_capacity(total_pages as usize);
         page_imgs_pairs.push((1, first_page.docs));
@@ -438,6 +457,15 @@ impl DownloadTask {
             .collect();
 
         tracing::trace!(comic_title, chapter_title, "获取图片链接成功");
+        tracing::warn!(
+            comic_title,
+            chapter_title,
+            "DEBUG_IMG final img_urls count={}",
+            img_urls.len()
+        );
+        if let Some(u) = img_urls.first() {
+            tracing::warn!(comic_title, chapter_title, "DEBUG_IMG first url=`{}`", u);
+        }
 
         Ok(img_urls)
     }
