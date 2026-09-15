@@ -2,7 +2,7 @@
 import { commands } from '../bindings.ts'
 import { useStore } from '../store.ts'
 import { ref, onMounted } from 'vue'
-import icon from '../../src-tauri/icons/128x128.png'
+import icon from '/favicon.png'
 
 const store = useStore()
 
