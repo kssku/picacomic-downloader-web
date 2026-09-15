@@ -137,7 +137,20 @@ COPY --from=server /build/target/release/pica-server /app/pica-server
 COPY --from=web /build/dist /app/dist
 
 # 数据目录：配置、日志、漫画全部落在这里，必须挂 volume
-RUN mkdir -p /data && chown -R pica:pica /app /data
+#
+# 为什么 chown 之后还要 chmod：
+#   宿主机上若启用了特殊 ACL（飞牛 fnOS 的存储池就是这样），源文件的
+#   权限位可能是 000。Docker 的 COPY 会原样保留权限位，于是镜像里出现
+#   一个 owner 正确但权限为 0 的文件——连 owner 自己都读不了。
+#   实际症状很隐蔽：ServeDir 打不开该文件，转而触发 SPA fallback，
+#   浏览器请求 /favicon.png 得到的是 index.html（200 而非 404），
+#   而同一目录下权限正常的 .js/.css 却能正常返回。
+#   chown 只改归属、不改权限位，所以必须补一条 chmod。
+#
+# a+rX：所有文件加可读；目录额外加可进入（X 只对目录和已有可执行位的文件生效）
+RUN mkdir -p /data \
+    && chown -R pica:pica /app /data \
+    && chmod -R a+rX /app/dist /app/pica-server
 VOLUME ["/data"]
 
 USER pica

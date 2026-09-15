@@ -151,15 +151,23 @@ where
 async fn file_log_watcher(app: AppContext) {
     let (sender, mut receiver) = tokio::sync::mpsc::channel(1);
 
+    // 关键：必须在当前 async 上下文里先把 Handle 取出来。
+    //
+    // notify 的 event_handler 闭包运行在 notify 自己创建的后台线程
+    // （inotify 事件循环）里，那个线程不在 Tokio 运行时内。若在闭包内部
+    // 调用 Handle::current()，会 panic：
+    //     there is no reactor running, must be called from the context
+    //     of a Tokio 1.x runtime
+    // 而 panic 发生在一个独立线程里，不会终止主服务，因此表现为
+    // 「服务看着正常，但实时日志功能静默失效」——很难发现。
+    let handle = tokio::runtime::Handle::current();
+
     let event_handler = move |res| {
-        // Web 版运行在 tokio 运行时里，用 Handle::block_on 而不是 tauri::async_runtime
-        tokio::runtime::Handle::current().block_on(async {
-            if let Err(err) = sender.send(res).await.map_err(anyhow::Error::from) {
-                let err_title = "发送日志文件watcher事件失败";
-                let string_chain = err.to_string_chain();
-                tracing::error!(err_title, message = string_chain);
-            }
-        });
+        // receiver 已关闭（服务正在退出）时 send 会失败，这是正常关闭路径，
+        // 不是错误。早期版本在这里 unwrap 会让 notify 线程二次 panic。
+        if let Err(err) = handle.block_on(sender.send(res)) {
+            tracing::debug!(message = "日志文件 watcher 通道已关闭，忽略事件", error = %err);
+        }
     };
 
     let mut watcher = match RecommendedWatcher::new(event_handler, notify::Config::default())
