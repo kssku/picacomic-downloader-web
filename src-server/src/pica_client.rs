@@ -348,6 +348,14 @@ impl PicaClient {
         }
         let image_data = http_resp.bytes().await?;
 
+        // 老漫画的图片 URL 可能已失效，服务器会返回 HTML 错误页而非图片。
+        // 这里提前识别，给出明确错误，而不是让 image 库报模糊的"格式不支持"。
+        if looks_like_html(&image_data) {
+            anyhow::bail!(
+                "图片 URL 返回了 HTML 页面（该图片可能已失效或下架）: {url}"
+            );
+        }
+
         let format = image::guess_format(&image_data)
             .context("无法从图片数据中猜测出图片格式，可能图片数据不完整或已损坏")?;
 
@@ -356,6 +364,21 @@ impl PicaClient {
 }
 
 // ===================== 辅助函数 =====================
+
+/// 判断响应体是不是 HTML（而非图片）。
+///
+/// 失效的图片 URL 常返回 `<!DOCTYPE html>` 或 `<html>` 错误页。
+/// 用宽松的前缀匹配，能覆盖常见的错误页形态。
+fn looks_like_html(data: &[u8]) -> bool {
+    // 跳过前导空白
+    let head: Vec<u8> = data
+        .iter()
+        .skip_while(|b| b.is_ascii_whitespace())
+        .take(32)
+        .map(|b| b.to_ascii_lowercase())
+        .collect();
+    head.starts_with(b"<!doctype") || head.starts_with(b"<html")
+}
 
 fn create_signature(path: &str, method: &reqwest::Method, time: &str) -> anyhow::Result<String> {
     let method = method.as_str();
