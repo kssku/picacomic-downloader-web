@@ -426,6 +426,7 @@ export const commands = {
 type EventMap = {
 	downloadTaskEvent: DownloadTaskEvent;
 	logEvent: LogEvent;
+        taskSnapshot: DownloadTaskEvent[];
 };
 
 /** topic -> 回调集合。 */
@@ -563,6 +564,7 @@ export function disconnectEvents(): void {
 const TOPIC_MAP: Record<keyof EventMap, string> = {
 	downloadTaskEvent: "download-task-event",
 	logEvent: "log-event",
+        taskSnapshot: "task-snapshot-event",
 };
 
 function subscribe<K extends keyof EventMap>(
@@ -607,6 +609,10 @@ export const events = {
 		listen: (cb: (ev: { payload: DownloadTaskEvent }) => void) =>
 			subscribe("downloadTaskEvent", cb),
 	},
+        taskSnapshot: {
+                listen: (cb: (ev: { payload: DownloadTaskEvent[] }) => void) =>
+                        subscribe("taskSnapshot", cb),
+        },
 	logEvent: {
 		listen: (cb: (ev: { payload: LogEvent }) => void) =>
 			subscribe("logEvent", cb),

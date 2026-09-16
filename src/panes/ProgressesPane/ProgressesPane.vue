@@ -61,6 +61,33 @@ onMounted(async () => {
       progressData.indicator = indicator
     }
   })
+
+  // 任务快照：连接（或重连）时后端会推送一次全量任务列表。
+  // API 创建的任务、以及页面刷新前已在跑的任务，都靠这里补齐；
+  // 否则只靠 downloadTaskEvent 的增量事件会漏掉已存在的任务。
+  await events.taskSnapshot.listen(({ payload }) => {
+    for (const ev of payload) {
+      if (ev.event !== 'Create') continue
+      const { chapterInfo, state, downloadedImgCount, totalImgCount } = ev.data
+
+      let indicator = ''
+      if (state === 'Pending') indicator = '排队中'
+      else if (state === 'Downloading') indicator = '下载中'
+      else if (state === 'Paused') indicator = '已暂停'
+      else if (state === 'Cancelled') indicator = '已取消'
+      else if (state === 'Completed') indicator = '下载完成'
+      else if (state === 'Failed') indicator = '下载失败'
+      if (totalImgCount !== 0) indicator += ` ${downloadedImgCount}/${totalImgCount}`
+
+      const percentage = totalImgCount === 0 ? 0 : (downloadedImgCount / totalImgCount) * 100
+
+      store.progresses.set(chapterInfo.chapterId, {
+        ...ev.data,
+        percentage,
+        indicator,
+      })
+    }
+  })
 })
 
 async function syncPickedComic() {
