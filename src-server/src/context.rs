@@ -14,6 +14,7 @@ use crate::config::Config;
 use crate::download_manager::DownloadManager;
 use crate::event_bus::EventBus;
 use crate::pica_client::PicaClient;
+use crate::store::Store;
 
 /// 运行期路径。全部来自环境变量，Docker 里挂一个卷到 `/data` 即可。
 #[derive(Debug, Clone)]
@@ -39,6 +40,11 @@ impl Paths {
     pub fn logs_dir(&self) -> PathBuf {
         self.data_dir.join("日志")
     }
+
+    /// 下载任务持久化数据库。与青龙的 `bica_comics.db` 完全独立。
+    pub fn db_path(&self) -> PathBuf {
+        self.data_dir.join("pica_server.db")
+    }
 }
 
 /// 全局应用上下文。廉价可克隆（内部全是 `Arc`）。
@@ -48,6 +54,9 @@ pub struct AppContext {
     config: Arc<RwLock<Config>>,
     pica_client: Arc<RwLock<Option<PicaClient>>>,
     download_manager: Arc<RwLock<Option<DownloadManager>>>,
+    /// 任务持久化。构造阶段就打开——它没有循环依赖，不像
+    /// `PicaClient` / `DownloadManager` 那样需要两段式构造。
+    store: Store,
     events: EventBus,
 }
 
@@ -57,11 +66,17 @@ impl AppContext {
     /// 因为它们自身持有 `AppContext`，会形成循环引用。
     pub fn new(paths: Paths) -> anyhow::Result<Self> {
         let config = Config::load(&paths.config_path())?;
+
+        // 数据库损坏时 `open_or_recover` 会备份旧库并重建空库，
+        // 而不是让整个服务起不来。
+        let store = Store::open_or_recover(&paths.db_path())?;
+
         Ok(Self {
             paths,
             config: Arc::new(RwLock::new(config)),
             pica_client: Arc::new(RwLock::new(None)),
             download_manager: Arc::new(RwLock::new(None)),
+            store,
             events: EventBus::new(),
         })
     }
@@ -100,6 +115,11 @@ impl AppContext {
         &self.events
     }
 
+    /// 取任务持久化层。廉价可克隆（内部是 `Arc`）。
+    pub fn store(&self) -> &Store {
+        &self.store
+    }
+
     /// 取 `PicaClient`。初始化后必然存在。
     pub fn pica_client(&self) -> PicaClient {
         self.pica_client
@@ -121,14 +141,25 @@ impl AppContext {
         self.pica_client().reload_client();
     }
 
-    /// 配置变更后重建下载调度器（并发度变了需要重建信号量）。
+    /// 配置变更后应用新的下载并发度（D8 的修复）。
+    ///
+    /// 旧实现会 `shutdown()` 旧 manager 再 `DownloadManager::new()` 一个新的。
+    /// 问题在于 `shutdown()` 只是把任务标记成 `Cancelled`，**已经 spawn 出去、
+    /// 正在跑的下载任务依然活着**，并继续持有旧信号量的 permit。于是旧信号量
+    /// 不会释放、新信号量又被创建，实际并发变成配置值的两倍。
+    ///
+    /// 改成在同一个 manager 上原地调整 permit：信号量对象不变，
+    /// 在跑的任务无感，并发度立刻生效。
     pub fn reload_download_manager(&self) -> anyhow::Result<()> {
-        let old = self.download_manager.read().clone();
-        if let Some(old) = old {
-            old.shutdown();
+        let (chapter_concurrency, img_concurrency) = {
+            let config = self.config.read();
+            (config.chapter_concurrency, config.img_concurrency)
+        };
+
+        if let Some(manager) = self.download_manager.read().clone() {
+            manager.update_concurrency(chapter_concurrency, img_concurrency);
         }
-        let manager = DownloadManager::new(self.clone());
-        *self.download_manager.write() = Some(manager);
+
         Ok(())
     }
 }

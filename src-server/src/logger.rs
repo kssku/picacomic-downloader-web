@@ -52,24 +52,32 @@ impl Write for LogEventWriter {
 static RELOAD_FN: OnceLock<Box<dyn Fn() -> anyhow::Result<()> + Send + Sync>> = OnceLock::new();
 static GUARD: OnceLock<parking_lot::Mutex<Option<WorkerGuard>>> = OnceLock::new();
 
+/// 由环境变量决定日志级别。**默认 INFO。**
+///
+/// 曾用 TRACE，但每张图片下载都打日志，单日日志会涨到 20GB 撑爆磁盘。
+/// INFO 保留关键事件（下载完成/失败/章节状态），足够排查问题；
+/// 需要更详细日志时用 `PICA_LOG_LEVEL=TRACE/DEBUG` 覆盖。
+///
+/// 抽成纯函数是为了可测：这是**磁盘不被撑爆的唯一防线**，
+/// 一旦默认值回退成 TRACE，故障要等到磁盘写满才暴露。
+fn resolve_level(raw: Option<&str>) -> Level {
+    match raw {
+        Some("trace") | Some("TRACE") => Level::TRACE,
+        Some("debug") | Some("DEBUG") => Level::DEBUG,
+        Some("warn") | Some("WARN") => Level::WARN,
+        Some("error") | Some("ERROR") => Level::ERROR,
+        // 未设置 / 空串 / 拼错的大小写 / 无法识别的值，一律回落到 INFO。
+        _ => Level::INFO,
+    }
+}
+
 pub fn init(app: &AppContext) -> anyhow::Result<()> {
     let lib_module_path = module_path!();
     let lib_target = lib_module_path.split("::").next().context(format!(
         "解析lib_target失败: lib_module_path={lib_module_path}"
     ))?;
     // 过滤掉来自其他库的日志。
-    //
-    // 级别选择：默认 INFO。
-    // 曾用 TRACE，但每张图片下载都打日志，单日日志会涨到 20GB 撑爆磁盘。
-    // INFO 保留关键事件（下载完成/失败/章节状态），足够排查问题。
-    // 需要更详细日志时，可用环境变量 PICA_LOG_LEVEL=TRACE/DEBUG 覆盖。
-    let level = match std::env::var("PICA_LOG_LEVEL").as_deref() {
-        Ok("trace") | Ok("TRACE") => Level::TRACE,
-        Ok("debug") | Ok("DEBUG") => Level::DEBUG,
-        Ok("warn") | Ok("WARN") => Level::WARN,
-        Ok("error") | Ok("ERROR") => Level::ERROR,
-        _ => Level::INFO,
-    };
+    let level = resolve_level(std::env::var("PICA_LOG_LEVEL").ok().as_deref());
     let target_filter = Targets::new().with_target(lib_target, level);
     // 输出到文件
     let (file_layer, guard) = create_file_layer(app)?;
@@ -243,4 +251,63 @@ async fn file_log_watcher(app: AppContext) {
 
 pub fn logs_dir(app: &AppContext) -> anyhow::Result<std::path::PathBuf> {
     Ok(app.paths().logs_dir())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_level;
+    use tracing::Level;
+
+    // ── 验收标准 5：日志可控 ──────────────────────────────────────
+    //
+    // 规格是「默认 INFO 下一次完整章节下载 ≤200 行日志」。日志行数取决于
+    // 运行时，但**行数的唯一决定因素是这个默认级别**：TRACE 下每张图都会
+    // 打日志（曾导致单日 20GB），INFO 下只剩章节级事件。因此这里钉住级别
+    // 解析规则，就钉住了日志量级。
+
+    #[test]
+    fn level_defaults_to_info_when_env_absent() {
+        // 这是磁盘不被撑爆的关键断言：默认值绝不能回退成 TRACE/DEBUG。
+        assert_eq!(
+            resolve_level(None),
+            Level::INFO,
+            "未设置 PICA_LOG_LEVEL 时必须默认 INFO"
+        );
+    }
+
+    #[test]
+    fn level_is_overridable_via_env() {
+        // 验收标准 5 的后半句：设 PICA_LOG_LEVEL=trace 可恢复详细日志。
+        assert_eq!(resolve_level(Some("trace")), Level::TRACE);
+        assert_eq!(resolve_level(Some("TRACE")), Level::TRACE);
+        assert_eq!(resolve_level(Some("debug")), Level::DEBUG);
+        assert_eq!(resolve_level(Some("DEBUG")), Level::DEBUG);
+        assert_eq!(resolve_level(Some("warn")), Level::WARN);
+        assert_eq!(resolve_level(Some("error")), Level::ERROR);
+    }
+
+    #[test]
+    fn level_unknown_values_fall_back_to_info() {
+        // 拼错的大小写、空串、无法识别的值都不能意外放开到 TRACE。
+        for raw in ["", " ", "Trace", "TRace", "verbose", "3", "off", "info"] {
+            assert_eq!(
+                resolve_level(Some(raw)),
+                Level::INFO,
+                "无法识别的 PICA_LOG_LEVEL={raw:?} 必须回落到 INFO"
+            );
+        }
+    }
+
+    #[test]
+    fn level_never_defaults_to_trace() {
+        // 回归防线：历史上默认 TRACE 曾让单日日志涨到 20GB。
+        assert_ne!(resolve_level(None), Level::TRACE);
+        for raw in ["", "Trace", "tr", "ttrace"] {
+            assert_ne!(
+                resolve_level(Some(raw)),
+                Level::TRACE,
+                "只有精确的 trace/TRACE 才允许放开到 TRACE，实际输入 {raw:?}"
+            );
+        }
+    }
 }

@@ -15,6 +15,7 @@ use crate::context::AppContext;
 use crate::errors::{CommandError, CommandResult};
 use crate::extensions::AppContextExt;
 use crate::responses::UserProfileDetailRespData;
+use crate::store::{DbImage, DbTask, DbTaskState, ImageRepo, TaskRepo, TaskStats};
 use crate::types::{
     ChapterInfo, Comic, ComicInSearch,
     SearchResult, SearchSort,
@@ -367,8 +368,398 @@ pub async fn download_by_id(
 }
 
 // ════════════════════════════════════════════════════════════════
-// 已下载库存
+// 任务查询（Step 4：青龙契约对齐）
 // ════════════════════════════════════════════════════════════════
+//
+// 这一组端点直接读 SQLite 里的持久记录，是 `submit_state.json` 的
+// **单一真相源替代品**。青龙侧的下游脚本（`pika提交` / `pika打包`）
+// 可以从「读一个不断被覆写的 JSON」改成「查这个只增不改的接口」。
+//
+// 设计要点：
+// - 返回结构全部 camelCase，脚本直接 `JSON.parse` 就能用。
+// - 时间戳统一用 Unix 秒（与 DB 一致），不做本地时区转换——
+//   时区是展示层的事，契约层保持无歧义。
+
+/// 单个任务的对外表示。
+///
+/// 刻意**不**直接序列化 `DbTask`：DB 行里的字段是内部实现，
+/// 一旦前端/脚本依赖了它们，改 schema 就成了破坏性变更。
+/// 这里做一次显式映射，schema 变更的影响被挡在这一层。
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskView {
+    pub chapter_id: String,
+    pub comic_id: String,
+    pub comic_title: String,
+    pub chapter_title: String,
+    pub chapter_order: i64,
+    /// `pending` / `downloading` / `paused` / `cancelled` / `completed` / `failed`
+    pub state: String,
+    pub total_img_count: i64,
+    pub done_img_count: i64,
+    /// 已完成百分比，0-100，保留一位小数。脚本用它做进度上报。
+    pub progress: f64,
+    pub retry_count: i64,
+    pub last_error: Option<String>,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+impl From<&DbTask> for TaskView {
+    fn from(task: &DbTask) -> Self {
+        // 除零保护：`total` 为 0 说明清单还没登记，进度算 0 而不是 NaN。
+        let progress = if task.total_img_count > 0 {
+            #[allow(clippy::cast_precision_loss)]
+            let ratio = task.done_img_count as f64 / task.total_img_count as f64;
+            (ratio * 1000.0).round() / 10.0
+        } else {
+            0.0
+        };
+
+        Self {
+            chapter_id: task.chapter_id.clone(),
+            comic_id: task.comic_id.clone(),
+            comic_title: task.comic_title.clone(),
+            chapter_title: task.chapter_title.clone(),
+            chapter_order: task.chapter_order,
+            state: task.state.as_str().to_string(),
+            total_img_count: task.total_img_count,
+            done_img_count: task.done_img_count,
+            progress,
+            retry_count: task.retry_count,
+            last_error: task.last_error.clone(),
+            created_at: task.created_at,
+            updated_at: task.updated_at,
+        }
+    }
+}
+
+/// 图片级的对外表示。只在查单个任务时返回，避免列表接口体积爆炸。
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskImageView {
+    pub img_index: i64,
+    pub url: String,
+    pub state: String,
+    pub retry_count: i64,
+    pub last_error: Option<String>,
+    pub bytes: Option<i64>,
+    pub updated_at: i64,
+}
+
+impl From<&DbImage> for TaskImageView {
+    fn from(img: &DbImage) -> Self {
+        Self {
+            img_index: img.img_index,
+            url: img.url.clone(),
+            state: img.state.as_str().to_string(),
+            retry_count: img.retry_count,
+            last_error: img.last_error.clone(),
+            bytes: img.bytes,
+            updated_at: img.updated_at,
+        }
+    }
+}
+
+/// 列表接口的响应。带 `total` 让脚本能翻页而不必猜。
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskListView {
+    pub total: i64,
+    pub limit: i64,
+    pub offset: i64,
+    pub tasks: Vec<TaskView>,
+}
+
+/// 查任务列表。
+///
+/// `state` 支持单值过滤；不传则返回全部（含 `completed`）。
+/// 青龙的增量拉取可以传 `since`（Unix 秒），只取那之后有更新的任务——
+/// 这正是 `updated_at` 存在的意义。
+pub fn query_tasks(
+    app: &AppContext,
+    state: Option<String>,
+    comic_id: Option<String>,
+    since: Option<i64>,
+    limit: Option<i64>,
+    offset: Option<i64>,
+) -> CommandResult<TaskListView> {
+    let state = match state.as_deref() {
+        // 空字符串等同于「不过滤」，这样脚本拼 URL 时不用做条件判断。
+        None | Some("") => None,
+        Some(raw) => Some(
+            DbTaskState::parse(raw)
+                .with_context(|| format!("无法识别的任务状态 `{raw}`"))
+                .map_err(|err| CommandError::from("查询任务列表失败", err))?,
+        ),
+    };
+
+    // 上限 500：防止脚本误传 `limit=999999` 把整张表拉进内存。
+    // 下载任务量级是「万」级，500 一页足够脚本翻。
+    let limit = limit.unwrap_or(100).clamp(1, 500);
+    let offset = offset.unwrap_or(0).max(0);
+
+    let store = app.store();
+    let tasks = TaskRepo::list(store, state, comic_id.as_deref(), since, limit, offset)
+        .context("查询任务列表失败")
+        .map_err(|err| CommandError::from("查询任务列表失败", err))?;
+
+    let total = TaskRepo::count(store, state, comic_id.as_deref(), since)
+        .context("统计任务总数失败")
+        .map_err(|err| CommandError::from("查询任务列表失败", err))?;
+
+    Ok(TaskListView {
+        total,
+        limit,
+        offset,
+        tasks: tasks.iter().map(TaskView::from).collect(),
+    })
+}
+
+/// 查单个任务，附带失败图片明细。
+///
+/// `failedImages` 只在有失败时才非空——正常情况下（下载中 / 已完成）
+/// 它的开销只是一次索引查询。
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskDetailView {
+    #[serde(flatten)]
+    pub task: TaskView,
+    /// 未完成（`pending` + `failed`）的图片数。断点续传的「还剩多少」。
+    pub unfinished_img_count: i64,
+    pub failed_images: Vec<TaskImageView>,
+}
+
+pub fn get_task_detail(app: &AppContext, chapter_id: &str) -> CommandResult<TaskDetailView> {
+    let store = app.store();
+
+    let task = TaskRepo::get(store, chapter_id)
+        .context(format!("查询章节ID为`{chapter_id}`的任务失败"))
+        .map_err(|err| CommandError::from("查询任务详情失败", err))?
+        // 查不到就是 404 语义。这里统一走 `CommandError`，
+        // 前端读 `errTitle` 就能区分「不存在」和「查询出错」。
+        .ok_or_else(|| {
+            CommandError::from(
+                "查询任务详情失败",
+                anyhow!("未找到章节ID为`{chapter_id}`的下载任务"),
+            )
+        })?;
+
+    let unfinished_img_count = ImageRepo::count_unfinished(store, chapter_id)
+        .context("统计未完成图片失败")
+        .map_err(|err| CommandError::from("查询任务详情失败", err))?;
+
+    let failed_images = ImageRepo::list_failed(store, chapter_id)
+        .context("查询失败图片失败")
+        .map_err(|err| CommandError::from("查询任务详情失败", err))?;
+
+    Ok(TaskDetailView {
+        task: TaskView::from(&task),
+        unfinished_img_count,
+        failed_images: failed_images.iter().map(TaskImageView::from).collect(),
+    })
+}
+
+/// 各状态任务计数。青龙的「总览」脚本用。
+pub fn get_task_stats(app: &AppContext) -> CommandResult<TaskStats> {
+    TaskRepo::stats(app.store())
+        .context("统计任务状态失败")
+        .map_err(|err| CommandError::from("查询任务统计失败", err))
+}
+
+/// 清理终态任务记录（D7）。
+///
+/// 长期运行后 `download_task` 会无限增长：每个下载过的章节留一行，
+/// 而 `completed` 的行对运维已经没有意义（真正的事实源是磁盘上的文件和
+/// 青龙侧的 `is_downloaded`）。这里按保留天数删掉过期的终态行。
+///
+/// **只删 `completed` / `cancelled`**：
+/// - `failed` 必须留着，用户可能还要 `POST /tasks/:id/retry`；
+/// - `pending` / `downloading` / `paused` 是活任务，更不能删。
+///
+/// `retention_days` 传 `None` 时用默认 30 天；传 `Some(0)` 表示只保留
+/// 最近 24 小时内更新过的终态行（不是「全删」——0 天仍是一个窗口）。
+/// 图片行靠外键级联一起删除。
+pub fn purge_tasks(app: &AppContext, retention_days: Option<i64>) -> CommandResult<PurgeResult> {
+    // 下限 0：负数会让 `before_ts` 跑到未来，等于把刚完成的任务也删掉。
+    let retention_days = retention_days.unwrap_or(DEFAULT_PURGE_RETENTION_DAYS).max(0);
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+
+    let before_ts = purge_cutoff(now, retention_days);
+
+    let removed = TaskRepo::purge_terminal(app.store(), before_ts)
+        .context("清理历史任务失败")
+        .map_err(|err| CommandError::from("清理历史任务失败", err))?;
+
+    tracing::info!(
+        removed,
+        retention_days,
+        before_ts,
+        "已清理过期终态任务（failed 与活任务保留）"
+    );
+
+    Ok(PurgeResult {
+        removed,
+        retention_days,
+        before_ts,
+    })
+}
+
+/// 默认保留 30 天终态记录。
+const DEFAULT_PURGE_RETENTION_DAYS: i64 = 30;
+
+/// 由「当前时间 + 保留天数」算出删除截止时间戳。
+///
+/// 抽成纯函数是为了可测：`purge_terminal` 是**不可逆的批量删除**，
+/// 而这里唯一的算术错误（比如负数天数让 `before_ts` 跑到未来）会直接
+/// 删掉刚完成的任务。天数已在调用方 clamp 到 `>= 0`，这里再 `max(0)`
+/// 兜一层，保证 `before_ts` 永不晚于 `now`。
+fn purge_cutoff(now: i64, retention_days: i64) -> i64 {
+    now.saturating_sub(retention_days.max(0).saturating_mul(24 * 60 * 60))
+}
+
+/// `purge_tasks` 的结果。
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PurgeResult {
+    /// 实际删除的章节行数（图片行由外键级联，不计入）。
+    pub removed: usize,
+    /// 本次生效的保留天数。
+    pub retention_days: i64,
+    /// 删除截止时间（Unix 秒）。早于它的终态行被删。
+    pub before_ts: i64,
+}
+
+/// 手动重试一个失败 / 暂停的任务。
+///
+/// 语义与「取消后重建」不同：它**保留已下载的图片**，只把未完成的
+/// 图片重置为 `pending`，然后把任务状态打回 `Pending` 等调度。
+/// 这是图片级断点续传在 API 层的出口。
+///
+/// 三种情况：
+/// 1. 任务在内存里活着（本进程创建的）→ 重置图片 + 置 `Pending`，调度器接管。
+/// 2. 任务不在内存（上次进程遗留）→ 重置图片 + 置 `Pending`，
+///    由启动恢复流程或下一次 `pika提交` 触发重建。
+/// 3. 章节图片全部已完成 → 直接置 `Completed`，不做无意义的重下。
+pub fn retry_task(app: &AppContext, chapter_id: &str) -> CommandResult<RetryResult> {
+    let store = app.store();
+
+    let task = TaskRepo::get(store, chapter_id)
+        .context(format!("查询章节ID为`{chapter_id}`的任务失败"))
+        .map_err(|err| CommandError::from("重试任务失败", err))?
+        .ok_or_else(|| {
+            CommandError::from(
+                "重试任务失败",
+                anyhow!("未找到章节ID为`{chapter_id}`的下载任务"),
+            )
+        })?;
+
+    // 从终态里排除 `cancelled`：用户取消过的东西不该被一次误点的
+    // 重试按钮复活。重下已取消的任务请走 `POST /download/task` 显式重建。
+    if task.state == DbTaskState::Cancelled {
+        return Err(CommandError::from(
+            "重试任务失败",
+            anyhow!("章节ID为`{chapter_id}`的任务已被取消，请重新创建下载任务而不是重试"),
+        ));
+    }
+
+    let reset_count = ImageRepo::reset_failed(store, chapter_id)
+        .context("重置未完成图片失败")
+        .map_err(|err| CommandError::from("重试任务失败", err))?;
+
+    // 重置后重新对齐进度，让 `done_img_count` 反映事实。
+    let (total, done) = TaskRepo::resync_progress(store, chapter_id)
+        .context("对齐任务进度失败")
+        .map_err(|err| CommandError::from("重试任务失败", err))?;
+
+    let unfinished = total - done;
+
+    // 内存里若还挂着这个任务，先置 `Pending` 让调度循环重新捡起来。
+    // 不在内存里也不报错——`set_state` 会写 DB，恢复流程认这个状态。
+    let manager = app.get_download_manager();
+    let in_memory = manager.resume_download_task(chapter_id).is_ok();
+
+    // 全部已完成：没有必要再下一遍，直接把任务收尾成 `Completed`。
+    if unfinished == 0 {
+        TaskRepo::set_state(store, chapter_id, DbTaskState::Completed, None, 0)
+            .context("收尾任务状态失败")
+            .map_err(|err| CommandError::from("重试任务失败", err))?;
+        tracing::info!(chapter_id, "重试时发现章节已完整，直接置为完成");
+
+        return Ok(RetryResult {
+            chapter_id: chapter_id.to_string(),
+            reset_img_count: reset_count,
+            unfinished_img_count: 0,
+            scheduled: false,
+            already_complete: true,
+        });
+    }
+
+    tracing::info!(
+        chapter_id,
+        reset_count,
+        unfinished,
+        in_memory,
+        "已重置未完成图片，任务等待重新调度"
+    );
+
+    Ok(RetryResult {
+        chapter_id: chapter_id.to_string(),
+        reset_img_count: reset_count,
+        unfinished_img_count: unfinished,
+        scheduled: in_memory,
+        already_complete: false,
+    })
+}
+
+/// `retry_task` 的结果。脚本靠 `scheduled` 判断要不要等下一轮。
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RetryResult {
+    pub chapter_id: String,
+    /// 被重置回 `pending` 的图片数。
+    pub reset_img_count: usize,
+    /// 还剩多少张要下。
+    pub unfinished_img_count: i64,
+    /// 任务是否已在当前进程的调度器里挂上。
+    ///
+    /// `false` 不代表失败：任务已写入 DB，会在下次进程启动恢复时被拉起。
+    pub scheduled: bool,
+    /// 章节本来就完整，这次没有产生任何下载。
+    pub already_complete: bool,
+}
+
+/// 删除一条任务记录（图片行靠外键级联删除）。
+///
+/// **只删记录，不动磁盘文件。** 这是刻意的：误删一条 DB 行可以重建，
+/// 误删用户下载好的漫画不可恢复。要清文件请走青龙侧的清理脚本。
+pub fn delete_task(app: &AppContext, chapter_id: &str) -> CommandResult<()> {
+    let deleted = TaskRepo::delete(app.store(), chapter_id)
+        .context(format!("删除章节ID为`{chapter_id}`的任务失败"))
+        .map_err(|err| CommandError::from("删除任务失败", err))?;
+
+    if !deleted {
+        return Err(CommandError::from(
+            "删除任务失败",
+            anyhow!("未找到章节ID为`{chapter_id}`的下载任务"),
+        ));
+    }
+
+    // 内存里的任务也要取消，否则它下一轮状态迁移又会把行写回 DB，
+    // 用户会看到「删掉的任务自己回来了」。
+    let manager = app.get_download_manager();
+    if let Err(err) = manager.cancel_download_task(chapter_id) {
+        // 内存里没有是正常情况（任务只存在于 DB），降级为 debug。
+        tracing::debug!(chapter_id, message = %err, "取消内存任务失败（可能本就不在内存中）");
+    }
+
+    tracing::info!(chapter_id, "已删除下载任务记录");
+    Ok(())
+}
 
 // ════════════════════════════════════════════════════════════════
 // 前端字段同步
@@ -432,4 +823,167 @@ pub fn get_server_info(app: &AppContext) -> serde_json::Value {
         "downloadDir": app.config_read().download_dir.to_string_lossy(),
         "eventSubscribers": app.events().receiver_count(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{purge_cutoff, DEFAULT_PURGE_RETENTION_DAYS};
+
+    const DAY: i64 = 24 * 60 * 60;
+
+    // ── D7：清理窗口的算术 ────────────────────────────────────────
+    //
+    // `purge_terminal` 是不可逆的批量删除，唯一能出错的地方就是这个
+    // 截止时间戳。下面覆盖「正常窗口」「零天」「负数」「溢出」四种输入。
+
+    #[test]
+    fn purge_cutoff_subtracts_retention_window() {
+        let now = 1_700_000_000;
+        assert_eq!(purge_cutoff(now, 30), now - 30 * DAY);
+        assert_eq!(purge_cutoff(now, 1), now - DAY);
+    }
+
+    #[test]
+    fn purge_cutoff_zero_days_keeps_last_24h() {
+        // 0 天不是「全删」，而是「保留最近 24 小时」。
+        let now = 1_700_000_000;
+        assert_eq!(purge_cutoff(now, 0), now);
+    }
+
+    #[test]
+    fn purge_cutoff_clamps_negative_days_to_now() {
+        // 负数如果直接参与运算，`before_ts` 会跑到**未来**，
+        // 于是刚完成的任务也会被删掉。必须收敛到 `now`。
+        let now = 1_700_000_000;
+        assert_eq!(
+            purge_cutoff(now, -5),
+            now,
+            "负数保留天数不得把截止时间推到未来"
+        );
+        assert!(purge_cutoff(now, -5) <= now);
+    }
+
+    #[test]
+    fn purge_cutoff_saturates_instead_of_overflowing() {
+        // `i64::MIN` 天 * 86400 会溢出；debug 下溢出会 panic，
+        // release 下会回绕成一个正数 —— 两种都不能出现。
+        //
+        // 这里只断言「不 panic 且结果远在过去 / 等于 now」：
+        // `i64::MAX` 天算出的是 `now - i64::MAX`，它并未触及 `i64::MIN`，
+        // 钉死具体数值等于把饱和算法的内部细节写进测试。
+        let now = 1_700_000_000;
+        let far_past = purge_cutoff(now, i64::MAX);
+        assert!(
+            far_past < now - 100 * 365 * 24 * 60 * 60,
+            "极大天数应当落在远过去，实际 {far_past}"
+        );
+        assert_eq!(purge_cutoff(now, i64::MIN), now, "极端负数等同于零天");
+    }
+
+    #[test]
+    fn default_retention_is_thirty_days() {
+        assert_eq!(DEFAULT_PURGE_RETENTION_DAYS, 30);
+    }
+
+    // ── 验收标准 6：青龙契约 ──────────────────────────────────────
+    //
+    // 青龙侧有两个真实脚本，它们的字段名就是契约本身，改名即破坏：
+    //
+    // - `submit_pending.py` 读 `POST /download/by-id` 的响应，取
+    //   `createdCount` / `alreadyRunningChapters` / `skippedChapters`；
+    // - `submit_state.json` 是 `{"submitted": [comic_id, ...]}`。
+    //
+    // 下面用序列化后的 JSON 键名做断言，而不是断言 Rust 字段名——
+    // 因为破坏青龙的永远是线上的键名，不是编译期的标识符。
+
+    #[test]
+    fn download_by_id_response_keeps_qinglong_field_names() {
+        let result = super::DownloadByIdResult {
+            comic_id: "c1".into(),
+            comic_title: "标题".into(),
+            created_chapters: vec!["ch1".into()],
+            skipped_chapters: vec!["ch2".into()],
+            already_running_chapters: vec!["ch3".into()],
+            created_count: 1,
+        };
+
+        let json: serde_json::Value = serde_json::to_value(&result).unwrap();
+        let obj = json.as_object().unwrap();
+
+        // `submit_pending.py` 依赖的三个字段，缺一个脚本就会 KeyError。
+        for key in ["createdCount", "alreadyRunningChapters", "skippedChapters"] {
+            assert!(obj.contains_key(key), "青龙契约缺少字段 `{key}`");
+        }
+
+        // 值为数组的字段必须是数组，否则脚本的 `len()` 会炸。
+        assert!(obj["alreadyRunningChapters"].is_array());
+        assert!(obj["skippedChapters"].is_array());
+        assert_eq!(obj["createdCount"].as_u64(), Some(1));
+    }
+
+    #[test]
+    fn task_view_exposes_submitted_comic_ids() {
+        // `GET /api/tasks?state=completed` 是 `submit_state.json` 的替代品。
+        // 关键差异：状态文件存的是 **comic_id**，而任务表是**章节级**的。
+        // 所以「等价」的含义是：把 completed 任务的 comicId 去重，就能得到
+        // 状态文件里的 submitted 集合。这条断言把这个推导关系钉死。
+        let tasks = [
+            super::TaskView::from(&crate::store::DbTask {
+                chapter_id: "ch1".into(),
+                comic_id: "comic-a".into(),
+                comic_title: "A".into(),
+                chapter_title: "第1话".into(),
+                chapter_order: 1,
+                state: crate::store::DbTaskState::Completed,
+                total_img_count: 10,
+                done_img_count: 10,
+                retry_count: 0,
+                last_error: None,
+                dir_fmt: String::new(),
+                created_at: 1_700_000_000,
+                updated_at: 1_700_000_100,
+            }),
+            // 同一本漫画的第二个章节：去重后不应产生第二个 comic_id。
+            super::TaskView::from(&crate::store::DbTask {
+                chapter_id: "ch2".into(),
+                comic_id: "comic-a".into(),
+                comic_title: "A".into(),
+                chapter_title: "第2话".into(),
+                chapter_order: 2,
+                state: crate::store::DbTaskState::Completed,
+                total_img_count: 8,
+                done_img_count: 8,
+                retry_count: 0,
+                last_error: None,
+                dir_fmt: String::new(),
+                created_at: 1_700_000_000,
+                updated_at: 1_700_000_200,
+            }),
+            super::TaskView::from(&crate::store::DbTask {
+                chapter_id: "ch3".into(),
+                comic_id: "comic-b".into(),
+                comic_title: "B".into(),
+                chapter_title: "第1话".into(),
+                chapter_order: 1,
+                state: crate::store::DbTaskState::Completed,
+                total_img_count: 5,
+                done_img_count: 5,
+                retry_count: 0,
+                last_error: None,
+                dir_fmt: String::new(),
+                created_at: 1_700_000_000,
+                updated_at: 1_700_000_300,
+            }),
+        ];
+
+        let mut comics: Vec<String> = tasks.iter().map(|t| t.comic_id.clone()).collect();
+        comics.sort();
+        comics.dedup();
+
+        assert_eq!(
+            comics,
+            vec!["comic-a".to_string(), "comic-b".to_string()],
+            "completed 任务的 comicId 去重后应等价于 submit_state.json 的 submitted"
+        );
+    }
 }

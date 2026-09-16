@@ -68,6 +68,21 @@ pub fn router(app: AppContext, auth: AuthConfig) -> Router {
         .route("/download/comic", post(download_comic))
         .route("/download/by-id", post(download_by_id))
         .route("/download/tasks", get(list_download_tasks))
+        // ── 任务查询（Step 4：青龙契约对齐）──────────────
+        // 这些端点查的是 SQLite 里的持久记录，与内存调度状态无关。
+        // 青龙的 `pika提交` 可以用它们逐步取代 `submit_state.json`。
+        .route("/tasks", get(query_tasks))
+        .route("/tasks/stats", get(task_stats))
+        // `/tasks/purge` 是静态段，matchit 里静态优先于 `/tasks/:chapter_id`，
+        // 所以两者不冲突，`purge` 不会被当成 chapter_id。
+        .route("/tasks/purge", post(purge_tasks))
+        // 同一条路径上挂多个方法，必须一次 `route()` 注册完：
+        // axum 对同一路径重复 `route()` 会在启动时 panic。
+        .route(
+            "/tasks/:chapter_id",
+            get(get_task).delete(delete_task),
+        )
+        .route("/tasks/:chapter_id/retry", post(retry_task))
         // ── 字段同步 ──────────────────────────────────────
         .route("/sync/comic", post(sync_comic))
         .route("/sync/comic-in-search", post(sync_comic_in_search))
@@ -319,6 +334,114 @@ async fn sync_comic_in_search(
 ) -> Result<Json<ComicInSearch>, ApiError> {
     let synced = commands::get_synced_comic_in_search(&state.app, req.comic)?;
     Ok(Json(synced))
+}
+
+// ════════════════════════════════════════════════════════════════
+// 任务查询（Step 4：青龙契约对齐）
+// ════════════════════════════════════════════════════════════════
+
+/// `GET /api/tasks` 的分页与过滤参数。
+///
+/// 全部可选：不带任何参数时返回最近 100 条。
+#[derive(Deserialize, Default)]
+struct TasksQuery {
+    /// 任务状态过滤。空字符串等同不过滤。
+    state: Option<String>,
+    /// 只取某个漫画下的章节。
+    #[serde(rename = "comicId", alias = "comic_id")]
+    comic_id: Option<String>,
+    /// 增量拉取游标：只返回 `updated_at >= since` 的记录（Unix 秒）。
+    since: Option<i64>,
+    limit: Option<i64>,
+    offset: Option<i64>,
+}
+
+async fn query_tasks(
+    State(state): State<AppState>,
+    Query(q): Query<TasksQuery>,
+) -> Result<Json<commands::TaskListView>, ApiError> {
+    let view = handle!(
+        "查询任务列表失败",
+        commands::query_tasks(
+            &state.app,
+            q.state,
+            q.comic_id,
+            q.since,
+            q.limit,
+            q.offset,
+        )
+    )?;
+    Ok(Json(view))
+}
+
+async fn task_stats(
+    State(state): State<AppState>,
+) -> Result<Json<crate::store::TaskStats>, ApiError> {
+    let view = handle!("查询任务统计失败", commands::get_task_stats(&state.app))?;
+    Ok(Json(view))
+}
+
+async fn get_task(
+    State(state): State<AppState>,
+    Path(chapter_id): Path<String>,
+) -> Result<Json<commands::TaskDetailView>, ApiError> {
+    let view = handle!(
+        "查询任务详情失败",
+        commands::get_task_detail(&state.app, &chapter_id)
+    )?;
+    Ok(Json(view))
+}
+
+async fn retry_task(
+    State(state): State<AppState>,
+    Path(chapter_id): Path<String>,
+) -> Result<Json<commands::RetryResult>, ApiError> {
+    let view = handle!(
+        "重试下载任务失败",
+        commands::retry_task(&state.app, &chapter_id)
+    )?;
+    Ok(Json(view))
+}
+
+/// 清理过期终态任务（D7）。
+///
+/// `POST /api/tasks/purge`，body 可选 `{ "retentionDays": 30 }`。
+/// 用 POST 而不是 DELETE：这是个带副作用的批处理动作，且要带参数；
+/// DELETE 无 body 的惯例会让 `retentionDays` 只能走 query string。
+async fn purge_tasks(
+    State(state): State<AppState>,
+    body: Option<Json<PurgeRequest>>,
+) -> Result<Json<commands::PurgeResult>, ApiError> {
+    let retention_days = body.and_then(|Json(req)| req.retention_days);
+    let app = state.app.clone();
+
+    // 可能删掉成千上万行，走阻塞线程池，别占着 axum 的 async worker。
+    let result = tokio::task::spawn_blocking(move || {
+        commands::purge_tasks(&app, retention_days)
+    })
+    .await
+    .map_err(|err| ApiError(CommandError::from("清理历史任务失败", err)))??;
+
+    Ok(Json(result))
+}
+
+/// `purge_tasks` 的请求体，字段全可选。
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PurgeRequest {
+    #[serde(default)]
+    retention_days: Option<i64>,
+}
+
+async fn delete_task(
+    State(state): State<AppState>,
+    Path(chapter_id): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    handle!(
+        "删除下载任务失败",
+        commands::delete_task(&state.app, &chapter_id)
+    )?;
+    Ok(Json(serde_json::json!({ "ok": true })))
 }
 
 // ════════════════════════════════════════════════════════════════

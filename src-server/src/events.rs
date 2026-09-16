@@ -25,6 +25,13 @@ pub enum DownloadTaskEvent {
         state: DownloadTaskState,
         downloaded_img_count: u32,
         total_img_count: u32,
+        /// 累计重试次数。旧前端不认识这个字段会直接忽略，
+        /// 所以这里加字段是向后兼容的。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        retry_count: Option<u32>,
+        /// 最近一次失败原因，成功时为 `None`。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        last_error: Option<String>,
     },
 }
 

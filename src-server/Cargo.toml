@@ -56,6 +56,12 @@ futures-util = { version = "0.3" }
 base64 = { version = "0.22" }
 rand = { version = "0.8" }
 
+# ── 持久化（新增）──────────────────────────────────────────
+# 用 bundled 特性把 SQLite 一起编进二进制：
+# NAS 的 Docker 镜像里不需要额外装 libsqlite3，交叉构建也不会因为
+# 找不到系统库而失败。
+rusqlite = { version = "0.31", features = ["bundled"] }
+
 [profile.release]
 strip = true
 lto = true

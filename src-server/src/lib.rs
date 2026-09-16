@@ -15,5 +15,6 @@ pub mod extensions;
 pub mod logger;
 pub mod pica_client;
 pub mod responses;
+pub mod store;
 pub mod types;
 pub mod utils;
