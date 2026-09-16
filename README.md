@@ -101,6 +101,79 @@ Authorization: Basic base64(admin:<PICA_AUTH_TOKEN>)
 > 服务本身为明文 HTTP。若要暴露到公网，请置于反向代理（Nginx / Caddy 等）
 > 之后并启用 HTTPS，不要直接暴露 8080 端口。
 
+## API 调用（面向脚本 / 自动化）
+
+所有接口挂在 `/api` 前缀下，除 `/api/health` 外都需要认证（见上一节）。
+
+### 按 ID 下载
+
+最简单的下载入口：只需要漫画 ID，无需先构造漫画对象，适合青龙面板、
+定时任务、脚本等自动化场景。
+
+```http
+POST /api/download/by-id
+Content-Type: application/json
+Authorization: Bearer <PICA_AUTH_TOKEN>
+
+{
+  "comicId": "5f3c8d2a1b9e4f7c6a0d3e8b",
+  "chapterId": "a1b2c3d4e5f6"
+}
+```
+
+| 请求 | 结果 |
+|---|---|
+| 只传 `comicId` | 下载该漫画所有未下载的章节 |
+| `comicId` + `chapterId` | 只下载指定章节 |
+
+返回：
+
+```json
+{
+  "comicId": "5f3c8d2a1b9e4f7c6a0d3e8b",
+  "comicTitle": "漫画标题",
+  "createdChapters": ["chapter-id-1", "chapter-id-2"],
+  "skippedChapters": ["chapter-id-3"],
+  "alreadyRunningChapters": [],
+  "createdCount": 2
+}
+```
+
+- `createdChapters`：本次实际创建任务的章节
+- `skippedChapters`：已下载、被跳过的章节（仅整本下载时有值）
+- `alreadyRunningChapters`：任务已存在、未重复创建的章节
+- `createdCount`：本次创建的任务数
+
+失败时返回 HTTP 4xx/5xx + `{ "errTitle": "...", "errMessage": "..." }`。
+
+示例（curl）：
+
+```bash
+# 下载整本
+curl -X POST http://192.168.31.124:8080/api/download/by-id \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $PICA_AUTH_TOKEN" \
+  -d '{"comicId": "5f3c8d2a1b9e4f7c6a0d3e8b"}'
+
+# 只下载指定章节
+curl -X POST http://192.168.31.124:8080/api/download/by-id \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $PICA_AUTH_TOKEN" \
+  -d '{"comicId": "5f3c8d2a1b9e4f7c6a0d3e8b", "chapterId": "a1b2c3d4e5f6"}'
+```
+
+> 若已在 `.env` 里设置 `PICA_AUTH_DISABLED=true`，可省略 `Authorization` 头。
+
+### 下载任务控制
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| `GET` | `/api/download/tasks` | 当前所有任务快照 |
+| `POST` | `/api/download/task/{chapterId}/pause` | 暂停 |
+| `POST` | `/api/download/task/{chapterId}/resume` | 继续 |
+| `POST` | `/api/download/task/{chapterId}/cancel` | 取消 |
+
+实时进度通过 WebSocket `/api/ws` 推送（topic `download-task-event`）。
 ## 本地开发（不使用 Docker）
 
 前端：

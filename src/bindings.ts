@@ -27,6 +27,15 @@ export type Result<T, E> =
 	| { status: "ok"; data: T }
 	| { status: "error"; error: E };
 
+export type DownloadByIdResult = {
+        comicId: string;
+        comicTitle: string;
+        createdChapters: string[];
+        skippedChapters: string[];
+        alreadyRunningChapters: string[];
+        createdCount: number;
+};
+
 export type CommandError = { err_title: string; err_message: string };
 
 export type JsonValue =
@@ -339,6 +348,14 @@ export const commands = {
 	async downloadComic(comicId: string): Promise<Result<null, CommandError>> {
 		return await callResult<null>(() => post("/api/download/comic", { comicId }));
 	},
+      async downloadById(
+              comicId: string,
+              chapterId?: string,
+      ): Promise<Result<DownloadByIdResult, CommandError>> {
+              return await callResult<DownloadByIdResult>(() =>
+                      post("/api/download/by-id", { comicId, chapterId }),
+              );
+      },
 
 	async createDownloadTask(
 		comic: Comic,

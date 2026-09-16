@@ -66,6 +66,7 @@ pub fn router(app: AppContext, auth: AuthConfig) -> Router {
             post(cancel_download_task),
         )
         .route("/download/comic", post(download_comic))
+        .route("/download/by-id", post(download_by_id))
         .route("/download/tasks", get(list_download_tasks))
         // ── 字段同步 ──────────────────────────────────────
         .route("/sync/comic", post(sync_comic))
@@ -262,6 +263,25 @@ async fn download_comic(
 ) -> Result<Json<()>, ApiError> {
     commands::download_comic(&state.app, req.comic_id).await?;
     Ok(Json(()))
+}
+
+/// 按 ID 下载。`chapterId` 可选：不传则下载整本未下载章节。
+///
+/// 面向脚本 / 自动化（如青龙面板）调用，只依赖 comicId，无需构造 Comic 对象。
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DownloadByIdRequest {
+    comic_id: String,
+    #[serde(default)]
+    chapter_id: Option<String>,
+}
+
+async fn download_by_id(
+    State(state): State<AppState>,
+    Json(req): Json<DownloadByIdRequest>,
+) -> Result<Json<commands::DownloadByIdResult>, ApiError> {
+    let result = commands::download_by_id(&state.app, req.comic_id, req.chapter_id).await?;
+    Ok(Json(result))
 }
 
 /// 当前所有下载任务的快照，供前端首次加载补齐状态。

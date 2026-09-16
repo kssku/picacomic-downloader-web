@@ -230,6 +230,143 @@ pub async fn download_comic(app: &AppContext, comic_id: String) -> CommandResult
 }
 
 // ════════════════════════════════════════════════════════════════
+// 按 ID 下载（面向脚本 / 自动化调用）
+// ════════════════════════════════════════════════════════════════
+
+/// `download_by_id` 的返回结果。字段全部 camelCase，方便脚本直接解析。
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DownloadByIdResult {
+    /// 漫画 ID（回显，方便脚本确认）。
+    pub comic_id: String,
+    /// 漫画标题（取到后回显）。
+    pub comic_title: String,
+    /// 本次实际创建下载任务的章节 ID 列表。
+    pub created_chapters: Vec<String>,
+    /// 因「已下载」而跳过的章节 ID 列表（仅整本下载时有意义）。
+    pub skipped_chapters: Vec<String>,
+    /// 因「任务已存在」而未重复创建的章节 ID 列表。
+    pub already_running_chapters: Vec<String>,
+    /// 本次成功创建的任务数。
+    pub created_count: u32,
+}
+
+/// 通过漫画 ID 下载。
+///
+/// - 只传 `comic_id`：下载该漫画所有「未下载」的章节。
+/// - 同时传 `chapter_id`：只下载指定章节（忽略整本逻辑）。
+///
+/// 与前端「一键下载」的区别：这个入口只依赖 ID，不需要调用方先构造 `Comic` 对象，
+/// 适合青龙面板 / 脚本 / 自动化工具直接调用。
+pub async fn download_by_id(
+    app: &AppContext,
+    comic_id: String,
+    chapter_id: Option<String>,
+) -> CommandResult<DownloadByIdResult> {
+    let download_manager = app.get_download_manager();
+
+    let comic = utils::get_comic(app, &comic_id)
+        .await
+        .context(format!("获取ID为`{comic_id}`的漫画失败"))
+        .map_err(|err| CommandError::from("按ID下载漫画失败", err))?;
+
+    let comic_title = comic.title.clone();
+
+    // ── 指定章节：只下一章 ──────────────────────────────
+    if let Some(chapter_id) = chapter_id {
+        let exists = comic
+            .chapter_infos
+            .iter()
+            .any(|c| c.chapter_id == chapter_id);
+        if !exists {
+            let err = anyhow!("漫画`{comic_title}`中不存在章节ID为`{chapter_id}`的章节");
+            return Err(CommandError::from("按ID下载漫画失败", err));
+        }
+
+        let mut created_chapters = Vec::new();
+        let mut already_running_chapters = Vec::new();
+        match download_manager.create_download_task(comic.clone(), chapter_id.clone()) {
+            Ok(()) => created_chapters.push(chapter_id),
+            // 「任务已存在」不算致命错误，归入 already_running
+            Err(err) if err.to_string().contains("已存在") => {
+                already_running_chapters.push(chapter_id);
+            }
+            Err(err) => {
+                return Err(CommandError::from("按ID下载漫画失败", err));
+            }
+        }
+
+        tracing::debug!(
+            comic_title = %comic_title,
+            chapter_id = %created_chapters.first().cloned().unwrap_or_default(),
+            "按ID下载：指定章节任务创建完成"
+        );
+
+        return Ok(DownloadByIdResult {
+            comic_id,
+            comic_title,
+            created_count: created_chapters.len() as u32,
+            created_chapters,
+            skipped_chapters: Vec::new(),
+            already_running_chapters,
+        });
+    }
+
+    // ── 未指定章节：下载整本未下载章节 ──────────────────
+    let mut created_chapters = Vec::new();
+    let mut skipped_chapters = Vec::new();
+    let mut already_running_chapters = Vec::new();
+
+    for chapter_info in &comic.chapter_infos {
+        let chapter_id = chapter_info.chapter_id.clone();
+
+        // 已下载的章节直接跳过
+        if chapter_info.is_downloaded == Some(true) {
+            skipped_chapters.push(chapter_id);
+            continue;
+        }
+
+        match download_manager.create_download_task(comic.clone(), chapter_id.clone()) {
+            Ok(()) => created_chapters.push(chapter_id),
+            Err(err) if err.to_string().contains("已存在") => {
+                already_running_chapters.push(chapter_id);
+            }
+            Err(err) => {
+                // 单章创建失败不中断整本，记录后继续
+                tracing::warn!(
+                    comic_title = %comic_title,
+                    chapter_id = %chapter_id,
+                    error = %err,
+                    "按ID下载：创建章节任务失败，已跳过"
+                );
+            }
+        }
+    }
+
+    if created_chapters.is_empty() && already_running_chapters.is_empty() {
+        let err = anyhow!("漫画`{comic_title}`没有可下载的章节（全部已下载）");
+        return Err(CommandError::from("按ID下载漫画失败", err));
+    }
+
+    tracing::debug!(
+        comic_title = %comic_title,
+        created = created_chapters.len(),
+        skipped = skipped_chapters.len(),
+        already_running = already_running_chapters.len(),
+        "按ID下载：整本任务创建完成"
+    );
+
+    Ok(DownloadByIdResult {
+        comic_id,
+        comic_title,
+        created_count: created_chapters.len() as u32,
+        created_chapters,
+        skipped_chapters,
+        already_running_chapters,
+    })
+}
+
+// ════════════════════════════════════════════════════════════════
 // 已下载库存
 // ════════════════════════════════════════════════════════════════
 
