@@ -57,8 +57,20 @@ pub fn init(app: &AppContext) -> anyhow::Result<()> {
     let lib_target = lib_module_path.split("::").next().context(format!(
         "解析lib_target失败: lib_module_path={lib_module_path}"
     ))?;
-    // 过滤掉来自其他库的日志
-    let target_filter = Targets::new().with_target(lib_target, Level::TRACE);
+    // 过滤掉来自其他库的日志。
+    //
+    // 级别选择：默认 INFO。
+    // 曾用 TRACE，但每张图片下载都打日志，单日日志会涨到 20GB 撑爆磁盘。
+    // INFO 保留关键事件（下载完成/失败/章节状态），足够排查问题。
+    // 需要更详细日志时，可用环境变量 PICA_LOG_LEVEL=TRACE/DEBUG 覆盖。
+    let level = match std::env::var("PICA_LOG_LEVEL").as_deref() {
+        Ok("trace") | Ok("TRACE") => Level::TRACE,
+        Ok("debug") | Ok("DEBUG") => Level::DEBUG,
+        Ok("warn") | Ok("WARN") => Level::WARN,
+        Ok("error") | Ok("ERROR") => Level::ERROR,
+        _ => Level::INFO,
+    };
+    let target_filter = Targets::new().with_target(lib_target, level);
     // 输出到文件
     let (file_layer, guard) = create_file_layer(app)?;
     let (reloadable_file_layer, reload_handle) = tracing_subscriber::reload::Layer::new(file_layer);
