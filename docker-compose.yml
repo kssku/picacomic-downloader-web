@@ -82,10 +82,20 @@ services:
       - "host.docker.internal:host-gateway"
 
     volumes:
-      # 配置 / 日志 / 漫画全在容器内 /data 下。
+      # 配置 / 日志在容器内 /data 下。
       # 强烈建议绑到 NAS 的存储池（而不是默认的 docker 卷），
-      # 这样漫画是普通文件，方便快照、备份和直接读。
+      # 这样日志是普通文件，方便快照、备份和直接读。
       - "${PICA_DATA_PATH:-./data}:/data"
+
+      # ── 漫画下载目录 ───────────────────────────────────────────────
+      # 单独挂载，让下载产物直接落进后处理流水线（pica_postprocess.py）
+      # 扫描的源目录，实现「下载 → 打包 CBZ → 上传 115」全自动。
+      #
+      # 需要把 config.json 里的 downloadDir 改成 /comic-download
+      # （首次启动后改，或在网页「配置」里改）。
+      #
+      # 留空/注释掉则沿用 /data/漫画下载（不接后处理流水线）。
+      - "${PICA_COMIC_PATH:-./comic-download}:/comic-download"
 
     # 下载是 IO + 网络密集型，给足并发文件描述符
     ulimits:
