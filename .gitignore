@@ -23,10 +23,19 @@ data
 # Rust 构建产物（src-server 是本项目新增的 Web 服务 crate）
 target/
 src-server/target/
-src-tauri/target/
 
 # npm 残留 lockfile：本项目用 pnpm，两个 lockfile 并存会让构建阶段选错包管理器
 package-lock.json
+
+# unplugin 自动生成的类型声明（每次构建重新生成）
+auto-imports.d.ts
+components.d.ts
+
+# AI/工具生成的仓库摘要，与代码无关
+project_code_summary.txt
+
+# 旧桌面版（Tauri）已移除，防止误提交
+src-tauri
 
 # Editor directories and files
 .vscode/*

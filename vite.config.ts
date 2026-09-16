@@ -7,9 +7,6 @@ import UnoCSS from 'unocss/vite'
 import vueJsx from '@vitejs/plugin-vue-jsx'
 import vueDevTools from 'vite-plugin-vue-devtools'
 
-// @ts-expect-error process is a nodejs global
-const host = process.env.TAURI_DEV_HOST
-
 // https://vitejs.dev/config/
 export default defineConfig(async () => ({
   plugins: [
@@ -30,25 +27,14 @@ export default defineConfig(async () => ({
     }),
   ],
 
-  // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
-  //
-  // 1. prevent vite from obscuring rust errors
+  // 保留 Rust 报错，不被 Vite 清屏冲掉
   clearScreen: false,
-  // 2. tauri expects a fixed port, fail if that port is not available
   server: {
     port: 5005,
     strictPort: true,
-    host: host || false,
-    hmr: host
-      ? {
-          protocol: 'ws',
-          host,
-          port: 1421,
-        }
-      : undefined,
     watch: {
-      // 3. tell vite to ignore watching `src-tauri` / `src-server`
-      ignored: ['**/src-tauri/**', '**/src-server/**'],
+      // 不监听 Rust 后端源码，避免无谓的 HMR 抖动
+      ignored: ['**/src-server/**'],
     },
     proxy: {
       // Web 版开发态：把 /api 转发到 axum 后端（含 WebSocket）
