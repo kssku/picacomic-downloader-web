@@ -425,6 +425,21 @@ fn create_img_client(app: &AppContext) -> ClientWithMiddleware {
         .build()
 }
 
+/// 读取环境变量中的代理设置（`HTTPS_PROXY` / `https_proxy` / `ALL_PROXY` / `all_proxy`）。
+///
+/// reqwest 在 `default-features = false` 时不会启用 `system-proxy` feature，
+/// 因此 `Proxy::system()` 不会被调用，环境变量代理会被静默忽略。
+/// 这里手动读取，保证 `ProxyMode::System` 与 curl / 容器环境变量的行为一致。
+fn system_proxy_url() -> Option<String> {
+    const VARS: [&str; 4] = ["HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy"];
+    VARS.iter().find_map(|var| {
+        std::env::var(var)
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+    })
+}
+
 trait ClientBuilderExt {
     fn set_proxy(self, app: &AppContext, client_name: &str) -> Self;
 }
@@ -433,7 +448,21 @@ impl ClientBuilderExt for reqwest::ClientBuilder {
     fn set_proxy(self, app: &AppContext, client_name: &str) -> reqwest::ClientBuilder {
         let proxy_mode = app.get_config().read().proxy_mode;
         match proxy_mode {
-            ProxyMode::System => self,
+            ProxyMode::System => match system_proxy_url() {
+                Some(proxy_url) => match reqwest::Proxy::all(&proxy_url).map_err(anyhow::Error::from) {
+                    Ok(proxy) => {
+                        tracing::info!(client_name, proxy_url, "使用环境变量代理");
+                        self.proxy(proxy)
+                    }
+                    Err(err) => {
+                        let err_title = format!("{client_name}将`{proxy_url}`设为代理失败，将直连");
+                        let string_chain = err.to_string_chain();
+                        tracing::error!(err_title, message = string_chain);
+                        self.no_proxy()
+                    }
+                },
+                None => self.no_proxy(),
+            },
             ProxyMode::NoProxy => self.no_proxy(),
             ProxyMode::Custom => {
                 let config = app.get_config().read();
@@ -452,5 +481,101 @@ impl ClientBuilderExt for reqwest::ClientBuilder {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::system_proxy_url;
+    use std::sync::Mutex;
+
+    // 环境变量是进程级全局状态，串行化这些测试避免相互干扰。
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    const ALL_VARS: [&str; 4] = ["HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy"];
+
+    fn clear_proxy_vars() {
+        for var in ALL_VARS {
+            std::env::remove_var(var);
+        }
+    }
+
+    #[test]
+    fn system_proxy_url_is_none_when_no_env_set() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        clear_proxy_vars();
+
+        assert_eq!(system_proxy_url(), None);
+    }
+
+    #[test]
+    fn system_proxy_url_prefers_https_uppercase() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        clear_proxy_vars();
+
+        std::env::set_var("https_proxy", "http://lowercase:7890");
+        std::env::set_var("HTTPS_PROXY", "http://uppercase:7890");
+
+        // 这是 NAS 上的真实场景：容器同时设置了大小写两种变量。
+        assert_eq!(
+            system_proxy_url(),
+            Some("http://uppercase:7890".to_string())
+        );
+
+        clear_proxy_vars();
+    }
+
+    #[test]
+    fn system_proxy_url_falls_back_to_lowercase_and_all_proxy() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        clear_proxy_vars();
+
+        std::env::set_var("https_proxy", "http://lowercase:7890");
+        assert_eq!(
+            system_proxy_url(),
+            Some("http://lowercase:7890".to_string())
+        );
+
+        clear_proxy_vars();
+        std::env::set_var("all_proxy", "http://all:7890");
+        assert_eq!(system_proxy_url(), Some("http://all:7890".to_string()));
+
+        clear_proxy_vars();
+    }
+
+    #[test]
+    fn system_proxy_url_ignores_blank_and_trims_whitespace() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        clear_proxy_vars();
+
+        // 空白值不应被当成有效代理（reqwest 的 insert_proxy 也是同样语义）。
+        std::env::set_var("HTTPS_PROXY", "   ");
+        assert_eq!(system_proxy_url(), None);
+
+        std::env::set_var("HTTPS_PROXY", "  http://proxy:7890  ");
+        assert_eq!(
+            system_proxy_url(),
+            Some("http://proxy:7890".to_string())
+        );
+
+        clear_proxy_vars();
+    }
+
+    #[test]
+    fn system_proxy_url_is_parseable_by_reqwest() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        clear_proxy_vars();
+
+        // 关键回归点：环境变量里的值必须能被 reqwest::Proxy::all 接受，
+        // 否则 System 模式会退化成直连并导致 tls handshake eof。
+        std::env::set_var("HTTPS_PROXY", "http://host.docker.internal:7890");
+
+        let url = system_proxy_url().expect("应从环境变量读取到代理");
+        assert!(
+            reqwest::Proxy::all(&url).is_ok(),
+            "`{url}` 应能被 reqwest 解析为代理"
+        );
+
+        clear_proxy_vars();
     }
 }
