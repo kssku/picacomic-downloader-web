@@ -57,7 +57,6 @@ RUN --mount=type=cache,id=pnpm-store,target=/pnpm/store \
 
 # 再拷源码。这里显式列出，避免 .dockerignore 之外的意外文件影响缓存
 COPY index.html vite.config.ts tsconfig.json tsconfig.node.json uno.config.ts ./
-COPY auto-imports.d.ts components.d.ts ./
 COPY public ./public
 COPY src ./src
 
