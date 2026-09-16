@@ -23,8 +23,6 @@ pub struct Config {
     pub chapter_download_interval_sec: u64,
     pub img_concurrency: usize,
     pub img_download_interval_sec: u64,
-    pub download_all_favorites_interval_sec: u64,
-    pub update_downloaded_comics_interval_sec: u64,
     pub should_download_cover: bool,
     pub api_base_url: String,
 }
@@ -101,8 +99,6 @@ impl Config {
             chapter_download_interval_sec: 0,
             img_concurrency: 20,
             img_download_interval_sec: 0,
-            download_all_favorites_interval_sec: 0,
-            update_downloaded_comics_interval_sec: 0,
             should_download_cover: true,
             api_base_url: "https://picaapi.go2778.com".to_string(),
         }

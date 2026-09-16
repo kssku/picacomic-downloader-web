@@ -36,7 +36,6 @@ onMounted(async () => {
         progressData.chapterInfo.isDownloaded = true
         await syncPickedComic()
         await syncComicInSearch(progressData)
-        await syncComicInFavorite(progressData)
       }
 
       progressData.percentage = (downloadedImgCount / totalImgCount) * 100
@@ -92,21 +91,6 @@ async function syncComicInSearch(progressData: ProgressData) {
   Object.assign(comic, { ...result.data })
 }
 
-async function syncComicInFavorite(progressData: ProgressData) {
-  if (store.getFavoriteResult === undefined) {
-    return
-  }
-  const comic = store.getFavoriteResult.docs.find((comic) => comic.id === progressData.comic.id)
-  if (comic === undefined) {
-    return
-  }
-  const result = await commands.getSyncedComicInFavorite(comic)
-  if (result.status === 'error') {
-    console.error(result.error)
-    return
-  }
-  Object.assign(comic, { ...result.data })
-}
 </script>
 
 <template>

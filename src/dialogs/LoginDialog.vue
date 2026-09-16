@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref } from 'vue'
-import { commands } from '../bindings.ts'
+import { commands, setToken, reconnectEvents } from '../bindings.ts'
 import { useMessage } from 'naive-ui'
 import FloatLabelInput from '../components/FloatLabelInput.vue'
 import { useStore } from '../store.ts'
@@ -34,6 +34,10 @@ async function onLogin(email: string, password: string) {
   }
   message.success('登录成功')
   store.config.token = result.data
+  // 登录成功后写入 token 并建立 WebSocket 连接，
+  // 否则下载进度等实时事件永远收不到。
+  setToken(result.data)
+  reconnectEvents()
   showing.value = false
 }
 </script>

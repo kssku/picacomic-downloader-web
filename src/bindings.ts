@@ -47,7 +47,6 @@ export type ImageRespData = {
 export type DownloadFormat = "Jpeg" | "Png" | "Webp" | "Original";
 export type ProxyMode = "System" | "NoProxy" | "Custom";
 export type SearchSort = "TimeNewest" | "TimeOldest" | "LikeMost" | "ViewMost";
-export type GetFavoriteSort = "TimeNewest" | "TimeOldest";
 export type LogLevel = "TRACE" | "DEBUG" | "INFO" | "WARN" | "ERROR";
 export type DownloadTaskState =
 	| "Pending"
@@ -78,8 +77,6 @@ export type Config = {
 	chapterDownloadIntervalSec: number;
 	imgConcurrency: number;
 	imgDownloadIntervalSec: number;
-	downloadAllFavoritesIntervalSec: number;
-	updateDownloadedComicsIntervalSec: number;
 	shouldDownloadCover: boolean;
 	apiBaseUrl: string;
 };
@@ -140,19 +137,6 @@ export type Comic = {
 	comicDownloadDir?: string | null;
 };
 
-export type ComicInFavorite = {
-	id: string;
-	title: string;
-	author: string;
-	pagesCount: number;
-	epsCount: number;
-	finished: boolean;
-	categories: string[];
-	thumb: ImageRespData;
-	likesCount: number;
-	isDownloaded: boolean;
-	comicDownloadDir: string;
-};
 
 export type ComicInSearch = {
 	id: string;
@@ -173,7 +157,6 @@ export type ComicInSearch = {
 	comicDownloadDir: string;
 };
 
-export type GetFavoriteResult = Pagination<ComicInFavorite>;
 export type SearchResult = Pagination<ComicInSearch>;
 
 export type UserProfileDetailRespData = {
@@ -221,41 +204,6 @@ export type DownloadTaskEvent =
 				totalImgCount: number;
 			};
 	  };
-
-export type DownloadAllFavoritesEvent =
-	| { event: "GettingFavorites" }
-	| { event: "GettingComics"; data: { current: number; total: number } }
-	| { event: "EndGetComics" }
-	| {
-			event: "StartCreateDownloadTasks";
-			data: {
-				comicId: string;
-				comicTitle: string;
-				current: number;
-				total: number;
-			};
-	  }
-	| { event: "CreatingDownloadTask"; data: { comicId: string; current: number } }
-	| { event: "EndCreateDownloadTasks"; data: { comicId: string } };
-
-export type UpdateDownloadedComicsEvent =
-	| { event: "GetComicStart"; data: { total: number } }
-	| { event: "GetComicProgress"; data: { current: number; total: number } }
-	| {
-			event: "CreateDownloadTasksStart";
-			data: {
-				comicId: string;
-				comicTitle: string;
-				current: number;
-				total: number;
-			};
-	  }
-	| {
-			event: "CreateDownloadTaskProgress";
-			data: { comicId: string; current: number };
-	  }
-	| { event: "CreateDownloadTasksEnd"; data: { comicId: string } }
-	| { event: "GetComicEnd" };
 
 /** ============================ HTTP 传输层 ============================ */
 
@@ -392,14 +340,6 @@ export const commands = {
 		return await callResult<null>(() => post("/api/download/comic", { comicId }));
 	},
 
-	async downloadAllFavorites(): Promise<Result<null, CommandError>> {
-		return await callResult<null>(() => post("/api/download/favorites", {}));
-	},
-
-	async updateDownloadedComics(): Promise<Result<null, CommandError>> {
-		return await callResult<null>(() => post("/api/library/update", {}));
-	},
-
 	async createDownloadTask(
 		comic: Comic,
 		chapterId: string,
@@ -433,19 +373,6 @@ export const commands = {
 		);
 	},
 
-	async getFavorite(
-		sort: GetFavoriteSort,
-		page: number,
-	): Promise<Result<GetFavoriteResult, CommandError>> {
-		return await callResult<GetFavoriteResult>(() =>
-			post("/api/favorite", { sort, page }),
-		);
-	},
-
-	async getDownloadedComics(): Promise<Comic[]> {
-		return await callDirect<Comic[]>(() => post("/api/library/comics", {}));
-	},
-
 	async getLogsDirSize(): Promise<Result<number, CommandError>> {
 		return await callResult<number>(() => post("/api/logs/size", {}));
 	},
@@ -467,14 +394,6 @@ export const commands = {
 		return await callResult<Comic>(() => post("/api/sync/comic", { comic }));
 	},
 
-	async getSyncedComicInFavorite(
-		comic: ComicInFavorite,
-	): Promise<Result<ComicInFavorite, CommandError>> {
-		return await callResult<ComicInFavorite>(() =>
-			post("/api/sync/comic-in-favorite", { comic }),
-		);
-	},
-
 	async getSyncedComicInSearch(
 		comic: ComicInSearch,
 	): Promise<Result<ComicInSearch, CommandError>> {
@@ -488,10 +407,8 @@ export const commands = {
 
 /** topic -> payload 类型映射，与原 events 对象一致。 */
 type EventMap = {
-	downloadAllFavoritesEvent: DownloadAllFavoritesEvent;
 	downloadTaskEvent: DownloadTaskEvent;
 	logEvent: LogEvent;
-	updateDownloadedComicsEvent: UpdateDownloadedComicsEvent;
 };
 
 /** topic -> 回调集合。 */
@@ -633,10 +550,8 @@ export function disconnectEvents(): void {
 }
 
 const TOPIC_MAP: Record<keyof EventMap, string> = {
-	downloadAllFavoritesEvent: "download-all-favorites-event",
 	downloadTaskEvent: "download-task-event",
 	logEvent: "log-event",
-	updateDownloadedComicsEvent: "update-downloaded-comics-event",
 };
 
 function subscribe<K extends keyof EventMap>(
@@ -677,10 +592,6 @@ function subscribe<K extends keyof EventMap>(
  * 调用方大多写成 `await events.x.listen(...)`，await 一个函数同样是安全的。
  */
 export const events = {
-	downloadAllFavoritesEvent: {
-		listen: (cb: (ev: { payload: DownloadAllFavoritesEvent }) => void) =>
-			subscribe("downloadAllFavoritesEvent", cb),
-	},
 	downloadTaskEvent: {
 		listen: (cb: (ev: { payload: DownloadTaskEvent }) => void) =>
 			subscribe("downloadTaskEvent", cb),
@@ -688,9 +599,5 @@ export const events = {
 	logEvent: {
 		listen: (cb: (ev: { payload: LogEvent }) => void) =>
 			subscribe("logEvent", cb),
-	},
-	updateDownloadedComicsEvent: {
-		listen: (cb: (ev: { payload: UpdateDownloadedComicsEvent }) => void) =>
-			subscribe("updateDownloadedComicsEvent", cb),
 	},
 };

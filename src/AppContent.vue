@@ -1,16 +1,14 @@
 <script setup lang="tsx">
 import { onMounted, ref, watch } from 'vue'
-import { commands } from './bindings.ts'
+import { commands, setToken, reconnectEvents } from './bindings.ts'
 import { useMessage, useNotification } from 'naive-ui'
 import LoginDialog from './dialogs/LoginDialog.vue'
 import SearchPane from './panes/SearchPane.vue'
 import ChapterPane from './panes/ChapterPane.vue'
 import ProgressesPane from './panes/ProgressesPane/ProgressesPane.vue'
-import FavoritePane from './panes/FavoritePane.vue'
 import SettingsDialog from './dialogs/SettingsDialog.vue'
 import { PhInfo, PhUser, PhClockCounterClockwise, PhGearSix } from '@phosphor-icons/vue'
 import AboutDialog from './dialogs/AboutDialog.vue'
-import DownloadedPane from './panes/DownloadPane/DownloadedPane.vue'
 import { useStore } from './store.ts'
 import LogDialog from './dialogs/LogDialog.vue'
 import BatchDownloadPane from './panes/BatchDownloadPane.vue'  // 新增导入
@@ -57,6 +55,12 @@ onMounted(async () => {
   }
   // 获取配置
   store.config = await commands.getConfig()
+  // 若本地已保存 token（上次登录过），立即写入并建立 WebSocket 连接，
+  // 这样刷新页面后下载进度依然能实时更新。
+  if (store.config.token !== undefined && store.config.token !== '') {
+    setToken(store.config.token)
+    reconnectEvents()
+  }
   // 检查日志目录大小
   const result = await commands.getLogsDirSize()
   if (result.status === 'error') {
@@ -115,12 +119,6 @@ onMounted(async () => {
       <n-tabs class="h-full w-1/2" v-model:value="store.currentTabName" type="line" size="small" animated>
         <n-tab-pane class="h-full overflow-auto p-0!" name="search" tab="搜索" display-directive="show">
           <search-pane />
-        </n-tab-pane>
-        <n-tab-pane class="h-full overflow-auto p-0!" name="favorite" tab="收藏夹" display-directive="show">
-          <favorite-pane />
-        </n-tab-pane>
-        <n-tab-pane class="h-full overflow-auto p-0!" name="downloaded" tab="本地库存" display-directive="show">
-          <downloaded-pane />
         </n-tab-pane>
         <n-tab-pane class="h-full overflow-auto p-0!" name="chapter" tab="章节详情" display-directive="show">
           <chapter-pane />

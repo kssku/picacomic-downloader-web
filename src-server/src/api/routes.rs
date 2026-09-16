@@ -18,10 +18,7 @@ use crate::context::AppContext;
 use crate::errors::CommandError;
 use crate::events::DownloadTaskEvent;
 use crate::responses::UserProfileDetailRespData;
-use crate::types::{
-    Comic, ComicInFavorite, ComicInSearch, GetFavoriteResult, GetFavoriteSort, SearchResult,
-    SearchSort,
-};
+use crate::types::{Comic, ComicInSearch, SearchResult, SearchSort};
 
 /// 路由共享状态。
 #[derive(Clone)]
@@ -57,7 +54,6 @@ pub fn router(app: AppContext, auth: AuthConfig) -> Router {
         .route("/search", get(search_comic).post(post_search))
         .route("/comic/:comic_id", get(get_comic))
         .route("/comic", post(post_comic))
-        .route("/favorite", get(get_favorite).post(post_favorite))
         // ── 下载任务 ──────────────────────────────────────
         .route("/download/task", post(create_download_task))
         .route("/download/task/:chapter_id/pause", post(pause_download_task))
@@ -70,17 +66,9 @@ pub fn router(app: AppContext, auth: AuthConfig) -> Router {
             post(cancel_download_task),
         )
         .route("/download/comic", post(download_comic))
-        .route("/download/favorites", post(download_all_favorites))
         .route("/download/tasks", get(list_download_tasks))
-        // ── 库存 ──────────────────────────────────────────
-        .route(
-            "/library/comics",
-            get(get_downloaded_comics).post(post_downloaded_comics),
-        )
-        .route("/library/update", post(update_downloaded_comics))
         // ── 字段同步 ──────────────────────────────────────
         .route("/sync/comic", post(sync_comic))
-        .route("/sync/comic-in-favorite", post(sync_comic_in_favorite))
         .route("/sync/comic-in-search", post(sync_comic_in_search))
         // ── 日志 ──────────────────────────────────────────
         .route("/logs/size", get(get_logs_dir_size).post(post_logs_dir_size))
@@ -219,29 +207,6 @@ async fn post_comic(
     Ok(Json(comic))
 }
 
-#[derive(Deserialize)]
-struct FavoriteQuery {
-    sort: GetFavoriteSort,
-    page: i64,
-}
-
-async fn get_favorite(
-    State(state): State<AppState>,
-    Query(q): Query<FavoriteQuery>,
-) -> Result<Json<GetFavoriteResult>, ApiError> {
-    let result = commands::get_favorite(&state.app, q.sort, q.page).await?;
-    Ok(Json(result))
-}
-
-/// 前端走的是 `POST /api/favorite` + `{ sort, page }`。
-async fn post_favorite(
-    State(state): State<AppState>,
-    Json(q): Json<FavoriteQuery>,
-) -> Result<Json<GetFavoriteResult>, ApiError> {
-    let result = commands::get_favorite(&state.app, q.sort, q.page).await?;
-    Ok(Json(result))
-}
-
 // ════════════════════════════════════════════════════════════════
 // 下载任务
 // ════════════════════════════════════════════════════════════════
@@ -299,20 +264,6 @@ async fn download_comic(
     Ok(Json(()))
 }
 
-/// 下载整个收藏夹。
-///
-/// 这是长耗时操作（可能要跑几十分钟），因此立刻返回 202，
-/// 进度通过 WebSocket 的 `download-all-favorites-event` 推送。
-async fn download_all_favorites(State(state): State<AppState>) -> Result<Json<()>, ApiError> {
-    let app = state.app.clone();
-    tokio::spawn(async move {
-        if let Err(err) = commands::download_all_favorites(&app).await {
-            tracing::error!(err_title = err.err_title, message = err.err_message);
-        }
-    });
-    Ok(Json(()))
-}
-
 /// 当前所有下载任务的快照，供前端首次加载补齐状态。
 ///
 /// WebSocket 推的是增量事件，客户端刷新后会丢掉中间过程；
@@ -321,39 +272,6 @@ async fn list_download_tasks(
     State(state): State<AppState>,
 ) -> Json<Vec<DownloadTaskEvent>> {
     Json(state.app.download_manager().task_snapshot())
-}
-
-// ════════════════════════════════════════════════════════════════
-// 库存
-// ════════════════════════════════════════════════════════════════
-
-async fn get_downloaded_comics(State(state): State<AppState>) -> Result<Json<Vec<Comic>>, ApiError> {
-    let app = state.app.clone();
-    // 全量 WalkDir 是同步阻塞的，放到阻塞线程池，别卡住 tokio worker。
-    let comics = tokio::task::spawn_blocking(move || commands::get_downloaded_comics(&app))
-        .await
-        .map_err(|err| ApiError(CommandError::from("获取已下载漫画失败", err)))?;
-    Ok(Json(comics))
-}
-
-/// 更新库存。长耗时，立刻返回，进度走 WebSocket。
-async fn update_downloaded_comics(
-    State(state): State<AppState>,
-) -> Result<Json<()>, ApiError> {
-    let app = state.app.clone();
-    tokio::spawn(async move {
-        if let Err(err) = commands::update_downloaded_comics(&app).await {
-            tracing::error!(err_title = err.err_title, message = err.err_message);
-        }
-    });
-    Ok(Json(()))
-}
-
-/// 前端走的是 `POST /api/library/comics` + `{}`。
-async fn post_downloaded_comics(
-    State(state): State<AppState>,
-) -> Result<Json<Vec<Comic>>, ApiError> {
-    get_downloaded_comics(State(state)).await
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -374,13 +292,6 @@ async fn sync_comic(
     Ok(Json(synced))
 }
 
-async fn sync_comic_in_favorite(
-    State(state): State<AppState>,
-    Json(req): Json<ComicWrapper<ComicInFavorite>>,
-) -> Result<Json<ComicInFavorite>, ApiError> {
-    let synced = commands::get_synced_comic_in_favorite(&state.app, req.comic)?;
-    Ok(Json(synced))
-}
 
 async fn sync_comic_in_search(
     State(state): State<AppState>,
