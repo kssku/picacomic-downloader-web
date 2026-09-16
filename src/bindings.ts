@@ -428,7 +428,8 @@ function wsUrl(token: string): string {
 	const proto = location.protocol === "https:" ? "wss:" : "ws:";
 	// 浏览器的 WebSocket 构造函数不支持自定义请求头，凭证只能走查询串。
 	// 后端 `require_auth` 有对应的 `?token=` 兜底分支。
-	return `${proto}//${location.host}/api/ws?token=${encodeURIComponent(token)}`;
+	const query = token ? `?token=${encodeURIComponent(token)}` : "";
+	return `${proto}//${location.host}/api/ws${query}`;
 }
 
 function dispatch(topic: string, payload: any): void {
@@ -461,15 +462,8 @@ function connect(): void {
 	) {
 		return;
 	}
-
-	const token = getToken();
-	if (!token) {
-		// 没有 token 就不连，等登录后再调用 reconnectEvents()
-		return;
-	}
-
-	socket = new WebSocket(wsUrl(token));
-
+    // token 可能为空（后端关闭了认证），此时也建立连接，只是不带凭证。
+    socket = new WebSocket(wsUrl(getToken()));
 	socket.onopen = () => {
 		reconnectDelay = 1000;
 		// 后端 30s 主动 Ping，这里发个首帧让反代确认连接已建立

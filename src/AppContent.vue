@@ -55,12 +55,12 @@ onMounted(async () => {
   }
   // 获取配置
   store.config = await commands.getConfig()
-  // 若本地已保存 token（上次登录过），立即写入并建立 WebSocket 连接，
-  // 这样刷新页面后下载进度依然能实时更新。
+  // 若本地已保存 token（上次登录过），写入后建立 WebSocket 连接。
+  // 即使 token 为空（后端关闭了认证），也照样连接，否则收不到下载进度事件。
   if (store.config.token !== undefined && store.config.token !== '') {
     setToken(store.config.token)
-    reconnectEvents()
   }
+  reconnectEvents()
   // 检查日志目录大小
   const result = await commands.getLogsDirSize()
   if (result.status === 'error') {

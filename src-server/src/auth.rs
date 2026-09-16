@@ -26,6 +26,8 @@ pub struct AuthConfig {
     pub token: Arc<str>,
     /// Basic Auth 的用户名。默认 `admin`。
     pub username: Arc<str>,
+    /// 是否关闭认证。由 `PICA_AUTH_DISABLED` 控制，为 true 时所有请求直接放行。
+    pub disabled: bool,
 }
 
 impl AuthConfig {
@@ -41,10 +43,17 @@ impl AuthConfig {
         let username =
             std::env::var("PICA_AUTH_USER").unwrap_or_else(|_| String::from("admin"));
 
+        // PICA_AUTH_DISABLED=true/1 时关闭认证，所有请求直接放行。
+        let disabled = matches!(
+            std::env::var("PICA_AUTH_DISABLED").as_deref(),
+            Ok("true") | Ok("1") | Ok("TRUE") | Ok("True")
+        );
+
         (
             Self {
                 token: Arc::from(token.as_str()),
                 username: Arc::from(username.as_str()),
+                disabled,
             },
             generated,
         )
@@ -109,6 +118,11 @@ pub async fn require_auth(
     req: Request,
     next: Next,
 ) -> Response {
+    // 认证被显式关闭时（PICA_AUTH_DISABLED），所有请求直接放行。
+    if auth.disabled {
+        return next.run(req).await;
+    }
+
     let path = req.uri().path();
 
     // 健康检查与登录态探测不需要认证。

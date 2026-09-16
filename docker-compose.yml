@@ -43,6 +43,7 @@ services:
       # 打印一次；想固定下来就把生成的值填进 .env。
       PICA_AUTH_TOKEN: "${PICA_AUTH_TOKEN:-}"
       PICA_AUTH_USER: "${PICA_AUTH_USER:-admin}"
+      PICA_AUTH_DISABLED: "${PICA_AUTH_DISABLED:-false}"
 
       # ── 服务 ──────────────────────────────────────────────────────
       PICA_BIND: "0.0.0.0"
