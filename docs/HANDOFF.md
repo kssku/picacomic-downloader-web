@@ -154,8 +154,8 @@ ssh nas "curl -sS http://127.0.0.1:8080/api/health"
 | 2 不重复下载 | ✅ 通过（重启前文件 mtime 未变，85+163=248 精确吻合，0 重复） |
 | 3 单图失败不炸章节 | ✅ 通过（代码审查 + 单测 `single_image_failure_does_not_affect_siblings_and_retry_targets_only_it`） |
 | 4 热更新 imgConcurrency 20→10 | ✅ 通过（热更新生效、不中断、单调推进） |
-| 5 日志可控 | ⏳ 未验证 |
-| 6 API 契约 | ⏳ 未验证 |
+| 5 日志可控 | ✅ 通过（120 页章节 INFO 下仅 17 行，远低于 200 上限） |
+| 6 API 契约 | ✅ 通过（`/api/tasks` 支持 state/comicId/since/limit 过滤；注：为 30 天任务视图，非永久台账） |
 
 ---
 
