@@ -634,6 +634,19 @@ pub struct PurgeResult {
     pub before_ts: i64,
 }
 
+/// 判断「重试时」是否应当把任务直接收尾为 `Completed`。
+///
+/// 必须同时满足：
+/// - 没有未完成图片（`unfinished == 0`）；
+/// - **确实存在图片记录**（`total > 0`）。
+///
+/// `total == 0` 表示失败发生在「获取图片链接」阶段 —— `download_image`
+/// 里一行都没有。此时若收尾为 `Completed`，会把一个彻底失败的章节
+/// 伪造成成功，青龙侧将永远不会重试。
+fn should_finalize_as_completed(total: i64, unfinished: i64) -> bool {
+    total > 0 && unfinished == 0
+}
+
 /// 手动重试一个失败 / 暂停的任务。
 ///
 /// 语义与「取消后重建」不同：它**保留已下载的图片**，只把未完成的
@@ -683,8 +696,13 @@ pub fn retry_task(app: &AppContext, chapter_id: &str) -> CommandResult<RetryResu
     let manager = app.get_download_manager();
     let in_memory = manager.resume_download_task(chapter_id).is_ok();
 
-    // 全部已完成：没有必要再下一遍，直接把任务收尾成 `Completed`。
-    if unfinished == 0 {
+    // 全部已完成：没有任何未完成图片，**且确实存在图片记录**，
+    // 才收尾成 `Completed`。
+    //
+    // `total == 0` 表示 `download_image` 里一行都没有 —— 说明失败发生在
+    // 「获取图片链接」阶段（还没插入任何图片行）。此时绝不能判定为完成，
+    // 否则一个彻底失败的章节会被静默标成 `completed`，青龙侧永远不会重试。
+    if should_finalize_as_completed(total, unfinished) {
         TaskRepo::set_state(store, chapter_id, DbTaskState::Completed, None, 0)
             .context("收尾任务状态失败")
             .map_err(|err| CommandError::from("重试任务失败", err))?;
@@ -697,6 +715,16 @@ pub fn retry_task(app: &AppContext, chapter_id: &str) -> CommandResult<RetryResu
             scheduled: false,
             already_complete: true,
         });
+    }
+
+    // `total == 0`：失败在链接阶段，没有可复用的图片记录，必须重新拉链接。
+    // 这里显式打一条日志，避免又被误判为「已完成」。
+    if total == 0 {
+        tracing::info!(
+            chapter_id,
+            in_memory,
+            "重试时未发现任何图片记录，判定为链接阶段失败，重新排队"
+        );
     }
 
     tracing::info!(
@@ -985,5 +1013,21 @@ mod tests {
             vec!["comic-a".to_string(), "comic-b".to_string()],
             "completed 任务的 comicId 去重后应等价于 submit_state.json 的 submitted"
         );
+    }
+
+    // 回归：失败在「获取图片链接」阶段时，`download_image` 一行都没有
+    // （total == 0）。此前的实现只看 `unfinished == 0` 就判定完成，
+    // 会把彻底失败的章节静默标成 `completed`，导致青龙侧永不重试。
+    #[test]
+    fn failed_link_stage_is_not_finalized_as_completed() {
+        // total == 0（链接阶段失败）：不能判完成
+        assert!(!super::should_finalize_as_completed(0, 0));
+
+        // 全部下完（total > 0 且 unfinished == 0）：判完成
+        assert!(super::should_finalize_as_completed(5, 0));
+
+        // 还有剩（unfinished > 0）：不判完成
+        assert!(!super::should_finalize_as_completed(5, 2));
+
     }
 }
