@@ -91,7 +91,7 @@ impl Config {
             export_dir: data_dir.join("漫画导出"),
             enable_file_logger: true,
             download_format: DownloadFormat::default(),
-            dir_fmt: "{comic_title}/{order} {chapter_title}".to_string(),
+            dir_fmt: "{comic_id}/{order}".to_string(),
             proxy_mode: ProxyMode::System,
             proxy_host: "127.0.0.1".to_string(),
             proxy_port: 7890,

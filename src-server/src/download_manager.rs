@@ -1654,7 +1654,7 @@ impl ChapterInfo {
 
         if dir_names.len() < 2 {
             let err_msg =
-                "配置中的下载目录格式至少要有两个层级，例如：{comic_title}/{chapter_title}";
+                "配置中的下载目录格式至少要有两个层级，例如：{comic_id}/{order}";
             return Err(anyhow!(err_msg));
         }
         // 将格式化后的目录名拼接成完整的目录路径
