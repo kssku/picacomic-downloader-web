@@ -871,6 +871,47 @@ mod tests {
         assert_eq!((total, done), (10, 1));
     }
 
+    // ── 验收标准 3：单图失败不炸章节 ──────────────────────────
+
+    #[test]
+    fn single_image_failure_does_not_affect_siblings_and_retry_targets_only_it() {
+        let db = TempDb::new();
+        let store = db.open();
+
+        TaskRepo::upsert_new(&store, &make_task("ch-1", DbTaskState::Downloading, 5)).unwrap();
+        ImageRepo::register_batch(&store, "ch-1", &urls(5)).unwrap();
+
+        // 4 张成功，仅第 2 张（index=2）失败
+        ImageRepo::mark_done(&store, "ch-1", 0, Some(1)).unwrap();
+        ImageRepo::mark_done(&store, "ch-1", 1, Some(1)).unwrap();
+        ImageRepo::mark_failed(&store, "ch-1", 2, "HTTP 500").unwrap();
+        ImageRepo::mark_done(&store, "ch-1", 3, Some(1)).unwrap();
+        ImageRepo::mark_done(&store, "ch-1", 4, Some(1)).unwrap();
+
+        // 章节收尾：未完成数 == 1，只指向失败那张，兄弟图不受影响
+        assert_eq!(
+            ImageRepo::count_unfinished(&store, "ch-1").unwrap(),
+            1,
+            "只有失败的那 1 张算未完成，其余 4 张 done 不受影响"
+        );
+        let failed = ImageRepo::list_failed(&store, "ch-1").unwrap();
+        assert_eq!(failed.len(), 1);
+        assert_eq!(failed[0].img_index, 2);
+        assert_eq!(failed[0].last_error.as_deref(), Some("HTTP 500"));
+
+        // 重试：只重置失败的那 1 张，已 done 的 4 张不动
+        let reset = ImageRepo::reset_failed(&store, "ch-1").unwrap();
+        assert_eq!(reset, 1, "重试只补失败的那 1 张");
+        assert_eq!(ImageRepo::count_unfinished(&store, "ch-1").unwrap(), 1);
+        let imgs = ImageRepo::list_by_chapter(&store, "ch-1").unwrap();
+        for img in &imgs {
+            if img.img_index == 2 {
+                assert_eq!(img.state, DbImageState::Pending, "失败张被重置为待下");
+            } else {
+                assert_eq!(img.state, DbImageState::Done, "已成功的兄弟图保持 done");
+            }
+        }
+    }
     // ── 验收标准 5：幂等重提交（D5 过渡期）──────────────────────
 
     #[test]
