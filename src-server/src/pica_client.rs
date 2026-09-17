@@ -28,6 +28,19 @@ const API_KEY: &str = "C69BAF41DA5ABD1FFEDC6D2FEA56B";
 const NONCE: &str = "ptxdhmjzqtnrtwndhbxcpkjamb33w837";
 const DIGEST_KEY: &str = r"~d}$Q7$eIni=V)9\RK/P.RM4;9[7|@/CA}b~OW!3?EV`:<>M7pddUBL5n|0/*Cn";
 
+/// `api_client` 的请求总超时。
+///
+/// 早期设 2 秒。在 NAS + 代理链路下这个值太紧：获取章节图片链接时会并发
+/// 拉起全部页（几十个请求），任一页在 2s 内没回就被判失败，整章随之失败。
+/// 实测经代理单次约 0.8–0.9s，2s 属边际易崩。放宽到 15s，配合下面的重试
+/// 预算，覆盖偶发抖动。
+const API_REQUEST_TIMEOUT_SECS: u64 = 15;
+
+/// `api_client` 的重试总时长预算。
+///
+/// 必须大于单次请求超时，否则一次请求还没超时、预算就耗尽，重试没有机会发生。
+const API_RETRY_TOTAL_SECS: u64 = 30;
+
 #[derive(Clone)]
 pub struct PicaClient {
     app: AppContext,
@@ -399,10 +412,10 @@ pub fn create_api_client(app: &AppContext) -> ClientWithMiddleware {
     let retry_policy = ExponentialBackoff::builder()
         .base(1)
         .jitter(Jitter::Bounded)
-        .build_with_total_retry_duration(Duration::from_secs(3));
+        .build_with_total_retry_duration(Duration::from_secs(API_RETRY_TOTAL_SECS));
 
     let client = reqwest::ClientBuilder::new()
-        .timeout(Duration::from_secs(2))
+        .timeout(Duration::from_secs(API_REQUEST_TIMEOUT_SECS))
         .set_proxy(app, "api_client")
         .build()
         .unwrap();
@@ -486,7 +499,7 @@ impl ClientBuilderExt for reqwest::ClientBuilder {
 
 #[cfg(test)]
 mod tests {
-    use super::system_proxy_url;
+    use super::{API_REQUEST_TIMEOUT_SECS, API_RETRY_TOTAL_SECS, system_proxy_url};
     use std::sync::Mutex;
 
     // 环境变量是进程级全局状态，串行化这些测试避免相互干扰。
@@ -577,5 +590,22 @@ mod tests {
         );
 
         clear_proxy_vars();
+    }
+
+    // 回归：api_client 的超时预算必须自洽。
+    //
+    // 早期单次超时是 2s，在「并发拉取全部页 + 代理」场景下过紧，
+    // 任意一页抖动就会让整章在链接阶段失败。这里把下限钉死，防止
+    // 以后有人手滑改回一个过小的值。
+    #[test]
+    fn api_timeout_budget_is_not_too_tight() {
+        assert!(
+            API_REQUEST_TIMEOUT_SECS >= 10,
+            "单次请求超时不应低于 10s，否则并发拉页时边际易崩"
+        );
+        assert!(
+            API_RETRY_TOTAL_SECS > API_REQUEST_TIMEOUT_SECS,
+            "重试总预算必须大于单次超时，否则重试没有机会发生"
+        );
     }
 }
