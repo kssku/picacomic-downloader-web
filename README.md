@@ -1,4 +1,4 @@
-﻿# pica-server —— 哔咔漫画下载器（Web 版）
+# picacomic-downloader-web —— 哔咔漫画下载器（Web 版）
 
 哔咔漫画下载器的 **Web 后台版**：后端是一个自包含的 Rust HTTP 服务（axum），
 前端为 Vue 3 单页应用。整个应用跑在一个 Docker 容器里，用浏览器访问和控制，
