@@ -307,7 +307,7 @@ export const commands = {
 	},
 
 	async saveConfig(config: Config): Promise<Result<null, CommandError>> {
-		return await callResult<null>(() => post("/api/config", { config }));
+		return await callResult<null>(() => post("/api/config", config));
 	},
 
 	async login(
