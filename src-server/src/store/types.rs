@@ -54,13 +54,22 @@ impl Store {
         })
     }
 
-    /// 打开数据库；损坏时把旧库改名备份后重建空库。
+    /// 打开数据库；**真损坏**时把旧库改名备份后重建空库。
     ///
     /// 这是启动路径应该用的入口：宁可丢历史任务记录，也不能让服务起不来。
+    ///
+    /// **例外**：schema 版本高于程序支持（[`migrations::SchemaTooNew`]）
+    /// 不是损坏 —— 库和数据都完好，只是程序太旧。这种情况直接向上传播，
+    /// 拒绝启动，否则会把用户的数据当成损坏库删掉重建。
     pub fn open_or_recover(db_path: &Path) -> anyhow::Result<Self> {
         match Self::open(db_path) {
             Ok(store) => Ok(store),
             Err(err) => {
+                // schema 版本过高是逻辑错误，不该触发重建 —— 否则会静默删除用户数据。
+                if err.downcast_ref::<migrations::SchemaTooNew>().is_some() {
+                    return Err(err);
+                }
+
                 tracing::error!(
                     err_title = "数据库损坏，将备份旧库并重建",
                     db_path = %db_path.display(),
