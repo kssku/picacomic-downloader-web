@@ -183,6 +183,33 @@ ssh nas "tail -f /vol1/1000/pica-server/日志/picacomic-downloader.$(date +%F).
 
 ## 九、注意事项 / 待办
 
+### `open_or_recover` 误吞 5 类错误（已部分修复）
+
+`store/types.rs` 的 `open_or_recover` 把 `open()` 的任何 `Err`
+都当成「数据库损坏」，触发「备份旧库 + 删除 + 重建空库」。
+但 `open()` 有 7 个 `Err` 出口，只有 1 个是真损坏。
+
+已修（`240ebed`）：
+- ✅ `migrations::run` 版本过高 → 已加 `SchemaTooNew` 类型区分，
+  拒绝启动、数据完好、不重建
+
+**未修（待评估）**：
+
+| # | 出口 | 错误类型 | 触发场景 | 危险度 |
+|---|---|---|---|---|
+| 1 | `create_dir_all(parent)` | IO | 权限不足 / 磁盘满 | 中 |
+| 2 | **`Connection::open`** | IO | **文件被锁（多实例启动）** | **高** |
+| 3 | `Self::tune(&conn)` | SQLite | PRAGMA 失败 | 低 |
+| 4 | `integrity_check` 查询失败 | SQLite | 查询本身报错（非损坏） | 低 |
+| 5 | `migrations::run` 其他失败 | 迁移 bug | 迁移逻辑出错 | 中 |
+
+**#2 最危险**：多实例同时启动时，后启动的那个会把被锁的库
+当损坏库删掉重建，导致**数据丢失**。
+
+**修法待设计**：需要按错误类型分别判断——有些应该直接报错
+（权限、磁盘满），有些应该重试（文件锁），有些确实该重建（真损坏）。
+不在本轮范围。
+
 - **配置持久化**：改 `config.rs` 默认值不影响已有 `config.json`，需另行改配置文件（或用 API）。
 - **dir_fmt 影响恢复**：DB 里持久化了 `dir_fmt`，中途改格式会导致旧任务恢复时找不到文件。
 - **PAT**：NAS 曾用 HTTPS+PAT，已吊销并改 SSH。
