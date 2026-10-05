@@ -1,0 +1,65 @@
+name: Build and Push Image
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+    paths:
+      - 'src/**'
+      - 'src-server/**'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
+      - 'Dockerfile'
+      - '.github/workflows/build.yml'
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # 前端在 Dockerfile 的 web 阶段（node:22-bookworm-slim）里构建，
+      # 这里不单独跑 pnpm build —— 那是 jmcomic 那份工作流的做法，
+      # 因为它的 Dockerfile 只收现成的 static/。本仓库的 Dockerfile 是
+      # 三阶段自包含的（web → server → runtime），只需 docker build。
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
