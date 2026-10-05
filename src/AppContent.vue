@@ -131,7 +131,7 @@ onMounted(async () => {
 
       <div class="w-1/2 overflow-auto flex flex-col">
         <div
-          class="h-8.5 flex gap-col-1 mx-2 items-center border-solid border-0 border-b box-border border-[rgb(239,239,245)]">
+          class="h-8.5 flex gap-col-1 mx-2 items-center border-solid border-0 border-b box-border border-[var(--neutral-border)]">
           <div class="text-xl font-bold box-border">下载列表</div>
           <n-button class="ml-auto" size="small" @click="logViewerShowing = true">
             <template #icon>

@@ -322,10 +322,10 @@ function stateToColorClass(state: DownloadTaskState) {
 }
 
 .selection-container .selected {
-  @apply bg-[rgb(204,232,255)];
+  @apply bg-[var(--neutral-selected)];
 }
 
 :global(.selection-area) {
-  @apply bg-[rgba(46,115,252,0.5)];
+  @apply bg-[var(--neutral-selection)];
 }
 </style>

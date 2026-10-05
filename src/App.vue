@@ -3,15 +3,17 @@
 // Check out https://vuejs.org/api/sfc-script-setup.html#script-setup
 import AppContent from './AppContent.vue'
 import { GlobalThemeOverrides } from 'naive-ui'
+import { palette, radii } from './design-tokens'
 
+// 全部色值 / 圆角来自 design-tokens.ts —— 不要在组件里写字面量。
 const themeOverrides: GlobalThemeOverrides = {
   common: {
-    primaryColor: '#DB547C',
-    primaryColorHover: '#E87D9A',
-    primaryColorPressed: '#B53C64',
-    primaryColorSuppl: '#E87D9A',
-    borderRadius: '4px',
-    borderRadiusSmall: '3px',
+    primaryColor: palette.primary.DEFAULT,
+    primaryColorHover: palette.primary.hover,
+    primaryColorPressed: palette.primary.pressed,
+    primaryColorSuppl: palette.primary.suppl,
+    borderRadius: radii.md,
+    borderRadiusSmall: radii.sm,
     heightMedium: '32px',
   },
   Button: {
@@ -19,20 +21,20 @@ const themeOverrides: GlobalThemeOverrides = {
     paddingMedium: '0 12px',
   },
   Radio: {
-    buttonColorActive: '#DB547C',
-    buttonTextColorActive: '#FFF',
+    buttonColorActive: palette.primary.DEFAULT,
+    buttonTextColorActive: palette.neutral.onPrimary,
   },
   Dropdown: {
     borderRadius: '5px',
     padding: '6px 2px',
-    optionColorHover: '#DB547C',
-    optionTextColorHover: '#FFF',
+    optionColorHover: palette.primary.DEFAULT,
+    optionTextColorHover: palette.neutral.onPrimary,
     optionHeightMedium: '28px',
   },
   Tabs: {
-    tabTextColorActiveSegment: '#DB547C',
-    tabTextColorHoverSegment: '#E87D9A',
-    tabColorSegment: '#FFDAE9',
+    tabTextColorActiveSegment: palette.primary.DEFAULT,
+    tabTextColorHoverSegment: palette.primary.hover,
+    tabColorSegment: palette.primary.soft,
     colorSegment: '#FFFFFFFF',
   },
 }

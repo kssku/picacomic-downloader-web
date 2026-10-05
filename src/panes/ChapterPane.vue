@@ -221,15 +221,15 @@ function isDownloading(state: State) {
 }
 
 .selection-container .selected {
-  @apply bg-[rgb(204,232,255)];
+  @apply bg-[var(--neutral-selected)];
 }
 
 .selection-container .downloaded {
-  @apply bg-[rgba(24,160,88,0.16)];
+  @apply bg-[var(--state-success)];
 }
 
 .selection-container .downloading {
-  @apply bg-[rgba(114,46,209,0.16)];
+  @apply bg-[var(--state-downloading)];
 }
 
 :deep(.n-checkbox__label) {
@@ -237,6 +237,6 @@ function isDownloading(state: State) {
 }
 
 :global(.selection-area) {
-  @apply bg-[rgba(46,115,252,0.5)];
+  @apply bg-[var(--neutral-selection)];
 }
 </style>
