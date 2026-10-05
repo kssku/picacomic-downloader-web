@@ -222,6 +222,16 @@ pub enum DbImageState { Pending, Done, Failed }
 > （前端只消费 WS，REST tasks 只服务青龙）。
 > 详细论证与接缝警示见 `docs/API.md` 第六节。
 
+> **设计说明**：前端**不消费** `/api/tasks`，任务列表仅由 WebSocket 驱动
+> （`download-task-event` 增量 + `task-snapshot-event` 首屏补齐）。
+> 这是**有意的设计**，不是遗漏 —— 因此本仓库没有也不需要
+> jmcomic 那样的 `src/api/state-adapter.ts`。
+>
+> ⚠️ **防坑提示**：若将来为前端新增 `/api/tasks` 的 REST 消费，**必须同时
+> 引入归一化**（把 REST 小写 state 转成 PascalCase 再写入 store），否则状态
+> 比较会静默失效 —— 已完成任务会永远留在「未完成」tab，不报错、类型检查
+> 也过。jmcomic 已踩过此坑，见其 `src/api/state-adapter.ts` 顶部注释。
+
 ---
 
 ## 八、损坏恢复

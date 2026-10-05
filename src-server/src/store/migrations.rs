@@ -47,6 +47,8 @@ fn migrate_v1(conn: &Connection) -> anyhow::Result<()> {
             comic_title     TEXT NOT NULL,
             chapter_title   TEXT NOT NULL,
             chapter_order   INTEGER NOT NULL DEFAULT 0,
+            -- 取值见 DbTaskState::as_str()：pending / downloading / paused /
+            -- cancelled / completed / failed
             state           TEXT NOT NULL,
 
             -- 进度计数。保留是为了让前端继续用现有的 `downloaded/total` 渲染逻辑，
